@@ -1,0 +1,67 @@
+services:
+  # MySQL
+  mysql:
+    image: mysql:8.0.42
+    container_name: devnogi-mysql
+    restart: unless-stopped
+    env_file:
+      - .env.infra2
+    ports:
+      - "3316:3316"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      LANG: C.UTF_8
+      TZ: Asia/Seoul
+    volumes:
+      - /opt/mysql/data:/var/lib/mysql
+    networks:
+      - devnogi-network
+    command:
+      - --port=3316
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --skip-character-set-client-handshake
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+      - --default-time-zone=+09:00
+      - --explicit_defaults_for_timestamp=1
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-P", "3316" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:8.4.0
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6389:6389"
+    command: ["redis-server", "--port", "6389", "--requirepass", "${REDIS_PASSWORD}"]
+    networks:
+      - devnogi-network
+    volumes:
+      - /opt/infra/redis-data:/data
+
+  # AuthHeal
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal-prod-2
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_INTERVAL: ${AUTOHEAL_INTERVAL}
+      AUTOHEAL_START_PERIOD: ${AUTOHEAL_START_PERIOD}
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: ${AUTOHEAL_DEFAULT_STOP_TIMEOUT}
+      DOCKER_SOCK: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - devnogi-network
+    deploy:
+      resources:
+        limits:
+          memory: ${AUTOHEAL_MEMORY_LIMIT}
+        reservations:
+          memory: ${AUTOHEAL_MEMORY_RESERVATION}

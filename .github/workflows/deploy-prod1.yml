@@ -1,0 +1,44 @@
+name: Deploy to On-Premise 1
+
+on:
+  push:
+    paths:
+      - 'docker-compose-prod1.yml'
+      - '.github/workflows/deploy-prod1.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Copy docker-compose to Server 1
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.PROD1_HOST }}
+          username: ${{ secrets.PROD1_USER }}
+          key: ${{ secrets.PROD1_PEM_KEY }}
+          port: ${{ secrets.PROD1_SSH_PORT }}
+          source: "docker-compose-prod1.yml"
+          target: "/opt/infra/"
+
+      - name: Create .env and Execute Docker
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD1_HOST }}
+          username: ${{ secrets.PROD1_USER }}
+          key: ${{ secrets.PROD1_PEM_KEY }}
+          port: ${{ secrets.PROD1_SSH_PORT }}
+          script: |
+            mkdir -p /opt/infra
+            cd /opt/infra
+            
+            cat << 'EOF' > .env.infra1
+            ${{ secrets.PROD1_ENV_FILE }}
+            EOF
+            
+            docker compose -f docker-compose-prod1.yml --env-file .env.infra1 pull
+            docker compose -f docker-compose-prod1.yml --env-file .env.infra1 up -d
+            
+            docker image prune -f
