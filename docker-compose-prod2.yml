@@ -65,3 +65,7 @@ services:
           memory: ${AUTOHEAL_MEMORY_LIMIT}
         reservations:
           memory: ${AUTOHEAL_MEMORY_RESERVATION}
+
+networks:
+  devnogi-network:
+    driver: bridge
