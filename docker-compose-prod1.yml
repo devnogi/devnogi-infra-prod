@@ -64,4 +64,3 @@ services:
 networks:
   devnogi-network:
     driver: bridge
-    name: devnogi-network
