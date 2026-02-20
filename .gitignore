@@ -1,3 +1,5 @@
 .idea/
 
 .env
+.env.prod1
+.env.prod2
