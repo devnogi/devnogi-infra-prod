@@ -26,6 +26,8 @@ services:
       - --sql-mode=STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
       - --default-time-zone=+09:00
       - --explicit_defaults_for_timestamp=1
+      - --binlog-expire-logs-seconds=86400
+      - --max-binlog-size=100M
     healthcheck:
       test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-P", "3316" ]
       interval: 10s
