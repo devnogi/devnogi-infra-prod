@@ -1,6 +1,7 @@
 name: Deploy to On-Premise 2
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'docker-compose-prod2.yml'
