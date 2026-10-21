@@ -2,13 +2,14 @@ name: Deploy to On-Premise 2
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'docker-compose-prod2.yml'
-      - '.github/workflows/deploy-prod2.yml'
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    environment: production
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
