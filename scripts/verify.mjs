@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -7,18 +7,19 @@ import { fileURLToPath } from 'node:url';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const files = ['compose.local.yml', 'docker-compose-prod1.yml', 'docker-compose-prod2.yml'];
 const help = `사용법:
-  node scripts/verify.mjs         Compose 설정 검사
+  node scripts/verify.mjs         로컬 DB bootstrap 테스트와 Compose 설정 검사
   node scripts/verify.mjs --help  도움말 표시
 
-준비 조건: Node.js 20 이상. 실제 설정 검사에는 Docker Compose v2 이상이 필요합니다.
+준비 조건: Node.js 20 이상, Bash(Windows는 Git for Windows), Docker Compose v2 이상.
 도움말은 Docker 없이 실행할 수 있으며 Docker 데몬은 설정 검사에도 필요하지 않습니다.
 
 검사 파일: ${files.join(', ')}
-tests/compose.env의 합성 환경과 임시 디렉터리로 config --quiet만 검사합니다.
+bootstrap 테스트는 가짜 MySQL 명령으로 SQL과 실패 처리를 검사합니다.
+Compose는 tests/compose.env의 합성 환경과 임시 디렉터리로 config --quiet만 검사합니다.
 실제 .env를 변경하거나 컨테이너를 실행하지 않습니다.
 `;
 
-export function run(args = [], { runDocker = spawnSync, stdout = process.stdout, stderr = process.stderr } = {}) {
+export function run(args = [], { runDocker = spawnSync, runTests = spawnSync, stdout = process.stdout, stderr = process.stderr } = {}) {
   if (args.length === 1 && args[0] === '--help') {
     stdout.write(help);
     return 0;
@@ -30,6 +31,9 @@ export function run(args = [], { runDocker = spawnSync, stdout = process.stdout,
 
   let temp;
   try {
+    const tests = runTests(process.execPath, ['--test', join(root, 'tests', 'bootstrap-local-auth.test.mjs')], { stdio: 'inherit', shell: false });
+    if (tests.error) throw new Error(`Bootstrap 테스트 실행 환경을 확인하세요: ${tests.error.message}`);
+    if (tests.status !== 0) throw new Error(`Bootstrap 회귀 테스트 실패 (exit ${tests.status})`);
     temp = mkdtempSync(join(tmpdir(), 'devnogi-compose-verify-'));
     const fixture = join(root, 'tests', 'compose.env');
     const env = { ...process.env };
@@ -38,6 +42,9 @@ export function run(args = [], { runDocker = spawnSync, stdout = process.stdout,
       if (match) env[match[1]] = match[2];
     }
     copyFileSync(fixture, join(temp, '.env.infra2'));
+    const bootstrap = join('docker', 'local', 'mysql', '20-auth-schema.sh');
+    mkdirSync(dirname(join(temp, bootstrap)), { recursive: true });
+    copyFileSync(join(root, bootstrap), join(temp, bootstrap));
     for (const file of files) {
       copyFileSync(join(root, file), join(temp, file));
       const result = runDocker('docker', ['compose', '--project-directory', temp, '--env-file', fixture, '-f', join(temp, file), 'config', '--quiet'], { env, stdio: 'inherit' });

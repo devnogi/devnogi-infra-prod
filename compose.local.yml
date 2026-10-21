@@ -10,8 +10,15 @@ services:
       MYSQL_DATABASE: devnogi
       MYSQL_USER: ${DB_USER:-devnogi}
       MYSQL_PASSWORD: ${DB_PASSWORD:-local-dev-only}
+      DEVNOGI_LOCAL_BOOTSTRAP: "1"
     volumes:
       - mysql-data:/var/lib/mysql
+      - type: bind
+        source: ./docker/local/mysql/20-auth-schema.sh
+        target: /docker-entrypoint-initdb.d/20-auth-schema.sh
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       default:
         aliases: [devnogi-local-mysql]
