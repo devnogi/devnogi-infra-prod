@@ -83,7 +83,8 @@ test('help and invalid arguments do not invoke the Docker runner', () => {
   let calls = 0;
   for (const [args, expected] of [[['--help'], 0], [['--unknown'], 2], [['--help', 'extra'], 2]]) {
     const streams = output();
-    const status = run(args, { ...streams, runDocker: () => { calls += 1; return { status: 0 }; } });
+    const unexpected = () => { calls += 1; return { status: 0 }; };
+    const status = run(args, { ...streams, runDocker: unexpected, runTests: unexpected });
     assert.equal(status, expected);
   }
   assert.equal(calls, 0);
@@ -128,6 +129,13 @@ test('no arguments checks all Compose files in order with synthetic environment 
   let temp;
   const status = run([], {
     ...streams,
+    runTests: (command, args, options) => {
+      assert.equal(command, process.execPath);
+      assert.deepEqual(args, ['--test', join(dirname(dirname(script)), 'tests', 'bootstrap-local-auth.test.mjs')]);
+      assert.equal(options.stdio, 'inherit');
+      assert.equal(options.shell, false);
+      return { status: 0 };
+    },
     runDocker: (command, args, options) => {
       calls.push(basename(args[6]));
       temp ??= args[2];
@@ -140,6 +148,7 @@ test('no arguments checks all Compose files in order with synthetic environment 
       assert.equal(options.env.KAFKA_EXTERNAL_HOST, 'localhost');
       assert.equal(options.env.KAFKA_UI_SASL_JAAS_CONFIG, '');
       assert.equal(readFileSync(join(temp, '.env.infra2'), 'utf8'), readFileSync(fixture, 'utf8'));
+      assert.equal(readFileSync(join(temp, 'docker', 'local', 'mysql', '20-auth-schema.sh'), 'utf8'), readFileSync(join(dirname(dirname(script)), 'docker', 'local', 'mysql', '20-auth-schema.sh'), 'utf8'));
       assert.equal(readFileSync(args[6], 'utf8'), readFileSync(join(dirname(dirname(script)), files[calls.length - 1]), 'utf8'));
       return { status: 0 };
     },
@@ -157,6 +166,7 @@ test('second Compose failure stops before the third file and cleans up', () => {
   let temp;
   const status = run([], {
     ...streams,
+    runTests: () => ({ status: 0 }),
     runDocker: (_command, args) => {
       temp = args[2];
       calls.push(basename(args[6]));
@@ -176,6 +186,7 @@ test('Docker spawn failure reports the environment error and cleans up', () => {
   let temp;
   const status = run([], {
     ...streams,
+    runTests: () => ({ status: 0 }),
     runDocker: (_command, args) => {
       calls += 1;
       temp = args[2];
@@ -187,4 +198,30 @@ test('Docker spawn failure reports the environment error and cleans up', () => {
   assert.equal(streams.captured.stdout, '');
   assert.match(streams.captured.stderr, /Docker Compose 실행 환경을 확인하세요: spawnSync docker ENOENT/);
   assert.equal(existsSync(temp), false);
+});
+
+test('bootstrap test failure stops before Compose validation', () => {
+  const streams = output();
+  let dockerCalls = 0;
+  const status = run([], {
+    ...streams,
+    runTests: () => ({ status: 1 }),
+    runDocker: () => { dockerCalls += 1; return { status: 0 }; },
+  });
+  assert.equal(status, 1);
+  assert.equal(dockerCalls, 0);
+  assert.match(streams.captured.stderr, /Bootstrap 회귀 테스트 실패/);
+});
+
+test('bootstrap test process failure reports an environment issue', () => {
+  const streams = output();
+  let dockerCalls = 0;
+  const status = run([], {
+    ...streams,
+    runTests: () => ({ error: new Error('node unavailable'), status: null }),
+    runDocker: () => { dockerCalls += 1; return { status: 0 }; },
+  });
+  assert.equal(status, 1);
+  assert.equal(dockerCalls, 0);
+  assert.match(streams.captured.stderr, /Bootstrap 테스트 실행 환경/);
 });
