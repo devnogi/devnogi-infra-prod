@@ -3,3 +3,5 @@
 .env
 .env.prod1
 .env.prod2
+.env.*
+!.env.example
