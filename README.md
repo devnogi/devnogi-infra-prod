@@ -10,6 +10,15 @@ Node.js 20 이상과 Docker Compose v2를 준비하고 실행합니다. 설정 �
 node scripts/verify.mjs
 ```
 
+사용법과 준비 조건은 Docker 설치 없이 확인할 수 있습니다.
+
+```sh
+node scripts/verify.mjs --help
+node --test tests/verify.test.mjs
+```
+
+도움말은 종료 코드 0으로 끝나며 Docker를 호출하거나 환경 fixture를 읽지 않습니다. 알 수 없는 인수 또는 `--help extra` 같은 조합은 오류와 도움말 안내를 출력하고 종료 코드 2로 끝납니다. CLI 테스트는 실제 컨테이너나 운영 비밀값을 사용하지 않습니다. PR의 `verify`도 이 테스트 후 아래 Compose 검사를 실행합니다.
+
 로컬·운영 Compose 3개를 임시 디렉터리와 `tests/compose.env`의 가짜 값으로 검사합니다. 기존 `.env`를 수정하지 않고 컨테이너도 실행하지 않습니다. 이 검사는 YAML·Compose 설정 검증이며 서비스 기동·통합 테스트를 대체하지 않습니다.
 
 ## 로컬 의존 서비스
@@ -42,6 +51,6 @@ docker compose -f compose.local.yml --env-file .env.example up -d mysql kafka
 
 ## PR와 운영 배포
 
-PR은 `verify`와 `secret-scan`을 실행합니다. GitHub Ruleset에서 두 검사와 사람 리뷰 1개를 필수 조건으로 지정해야 병합 제한이 적용됩니다. 설정 파일만 추가했다고 서버 보호가 활성화된 것은 아닙니다. `node scripts/secret-scan.mjs`는 현재 파일의 기본 비밀값 패턴을 검사하고 값은 출력하지 않습니다. Git 이력 검사나 자격 증명 교체를 대신하지 않습니다.
+PR은 `verify`와 `secret-scan`을 실행합니다. 현재 GitHub Ruleset은 PR과 두 검사를 필수로 요구하며, 필수 승인 수는 0명입니다. PR 작성자가 다른 사람의 Approve 없이 병합할 수 있어도 필수 CI와 대화 해결 조건은 충족해야 합니다. 설정 파일만 추가했다고 서버 보호가 활성화된 것은 아닙니다. `node scripts/secret-scan.mjs`는 현재 파일의 기본 비밀값 패턴을 검사하고 값은 출력하지 않습니다. Git 이력 검사나 자격 증명 교체를 대신하지 않습니다.
 
 운영 배포는 `main`에서 `Deploy to On-Premise 1/2`를 수동 실행할 때만 가능하며 별도 사람 승인이 필요합니다. GitHub의 `production` environment에 리뷰어와 배포 브랜치 제한을 설정하세요. 두 운영 Compose는 실제 `/opt` 데이터와 운영 자격 증명을 사용하므로 로컬 실행 안내로 사용하지 않습니다.
