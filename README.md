@@ -70,4 +70,4 @@ docker compose --project-name devnogi-local-infra -f compose.local.yml --env-fil
 
 PR은 `verify`와 `secret-scan`을 실행합니다. 현재 GitHub Ruleset은 PR과 두 검사를 필수로 요구하며, 필수 승인 수는 0명입니다. PR 작성자가 다른 사람의 Approve 없이 병합할 수 있어도 필수 CI와 대화 해결 조건은 충족해야 합니다. 설정 파일만 추가했다고 서버 보호가 활성화된 것은 아닙니다. `node scripts/secret-scan.mjs`는 현재 파일의 기본 비밀값 패턴을 검사하고 값은 출력하지 않습니다. Git 이력 검사나 자격 증명 교체를 대신하지 않습니다.
 
-운영 배포는 `main`에서 `Deploy to On-Premise 1/2`를 수동 실행할 때만 가능하며 별도 사람 승인이 필요합니다. GitHub의 `production` environment에 리뷰어와 배포 브랜치 제한을 설정하세요. 두 운영 Compose는 실제 `/opt` 데이터와 운영 자격 증명을 사용하므로 로컬 실행 안내로 사용하지 않습니다.
+운영 배포는 `main`에서 `Deploy to On-Premise 1/2`를 수동 실행할 때 가능하며 별도 사람 승인이 필요합니다. 빠른 개선을 위한 `dev` 수동 운영 배포는 2026-12-31 23:59:59 KST까지 허용하며, push/PR은 운영 배포를 시작하지 않습니다. GitHub의 `production` environment에는 `main`과 `dev` 브랜치를 허용하고 기존 필수 리뷰어를 유지해야 합니다. 두 운영 Compose는 실제 `/opt` 데이터와 운영 자격 증명을 사용하므로 로컬 실행 안내로 사용하지 않습니다.
