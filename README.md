@@ -71,3 +71,5 @@ docker compose --project-name devnogi-local-infra -f compose.local.yml --env-fil
 PR은 `verify`와 `secret-scan`을 실행합니다. 현재 GitHub Ruleset은 PR과 두 검사를 필수로 요구하며, 필수 승인 수는 0명입니다. PR 작성자가 다른 사람의 Approve 없이 병합할 수 있어도 필수 CI와 대화 해결 조건은 충족해야 합니다. 설정 파일만 추가했다고 서버 보호가 활성화된 것은 아닙니다. `node scripts/secret-scan.mjs`는 현재 파일의 기본 비밀값 패턴을 검사하고 값은 출력하지 않습니다. Git 이력 검사나 자격 증명 교체를 대신하지 않습니다.
 
 운영 배포는 `main` push에서 자동 실행되며 복구 시 `main`에서 수동 실행할 수 있습니다. GitHub의 `production` environment는 `main`만 허용합니다. 두 운영 Compose는 실제 운영 데이터와 자격 증명을 사용하므로 로컬에서 실행하지 않습니다. 배포 실패 시 이전 Compose로 복구하며 volume은 삭제하지 않습니다.
+
+각 서버의 검증된 SSH 공개키 지문을 `PROD1_HOST_FINGERPRINT`, `PROD2_HOST_FINGERPRINT` secret에 설정해야 합니다. 현재 서비스별 실행 이미지가 정확히 하나의 RepoDigest로 확인되지 않거나 서비스·이미지 선언이 변경되면 배포를 중단합니다. 이미지 변경은 별도 digest 승격 절차가 필요합니다.
