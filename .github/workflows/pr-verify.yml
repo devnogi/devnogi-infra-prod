@@ -26,5 +26,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: node --test tests/verify.test.mjs
+      - run: node --test tests/verify.test.mjs tests/production-workflows.test.mjs tests/production-deploy-fixture.test.mjs
       - run: node scripts/verify.mjs

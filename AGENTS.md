@@ -5,4 +5,4 @@
 - 로컬 실습은 `compose.local.yml`과 `.env.example`만 사용한다. 운영 Compose에는 호스트 경로와 실제 서비스 데이터가 있으므로 로컬에서 실행하지 않는다.
 - 운영 파일·계약 변경은 승인된 기획 범위에서 구현하고, 독립 리뷰에 diff·검증 결과·배포 및 복구 순서를 제공한다.
 - 실제 `.env`·운영 데이터·키를 commit하거나 출력하지 않는다. 검증 실패와 Docker 미설치 같은 실행 환경 문제를 구분한다.
-- 운영 배포는 `main`의 수동 workflow와 `production` environment를 통해 별도 사람 승인 뒤 실행한다. push 또는 PR은 배포 승인으로 해석하지 않는다.
+- 운영 배포는 `main` push 또는 `main`의 수동 workflow로 `production` environment에서 실행한다. PR 자체는 배포하지 않는다.
