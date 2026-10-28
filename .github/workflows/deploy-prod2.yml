@@ -95,6 +95,14 @@ jobs:
             else
               cp .previous-compose-prod2.yml docker-compose-prod2.yml
               cp .previous-env-prod2 .env.infra2
-              docker compose -f docker-compose-prod2.yml -f .previous-images-prod2.yml --env-file .env.infra2 up -d --wait --pull never || echo 'Rollback failed' >&2
+              if docker compose -f docker-compose-prod2.yml -f .previous-images-prod2.yml --env-file .env.infra2 up -d --wait --pull never; then
+                if all_healthy; then
+                  echo 'Rollback health verification passed'
+                else
+                  echo 'Rollback health verification failed' >&2
+                fi
+              else
+                echo 'Rollback failed' >&2
+              fi
               exit 1
             fi
