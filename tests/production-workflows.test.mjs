@@ -14,5 +14,12 @@ for (const server of [1, 2]) {
     assert.match(workflow, new RegExp(`cp \\.previous-compose-prod${server}\\.yml docker-compose-prod${server}\\.yml`));
     assert.match(workflow, /up -d --wait/);
     assert.doesNotMatch(workflow, /down\s+-v|volume\s+rm|image prune/);
+    assert.match(workflow, new RegExp(`secrets\\.PROD${server}_SSH_PRIVATE_KEY`, 'g'));
+    assert.match(workflow, new RegExp(`secrets\\.PROD${server}_HOST_FINGERPRINT`, 'g'));
+    assert.doesNotMatch(workflow, /PEM_KEY|KNOWN_HOSTS/);
+    assert.doesNotMatch(workflow, new RegExp(`PROD${server === 1 ? 2 : 1}_`));
+    for (const reference of workflow.matchAll(/uses:\s*([^\s#]+)/g)) {
+      assert.match(reference[1], /@[0-9a-f]{40}$/);
+    }
   });
 }

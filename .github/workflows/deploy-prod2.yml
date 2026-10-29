@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Require trusted server fingerprint
         env:
@@ -31,7 +31,7 @@ jobs:
         with:
           host: ${{ secrets.PROD2_HOST }}
           username: ${{ secrets.PROD2_USER }}
-          key: ${{ secrets.PROD2_PEM_KEY }}
+          key: ${{ secrets.PROD2_SSH_PRIVATE_KEY }}
           fingerprint: ${{ secrets.PROD2_HOST_FINGERPRINT }}
           port: ${{ secrets.PROD2_SSH_PORT }}
           source: "docker-compose-prod2.yml"
@@ -42,7 +42,7 @@ jobs:
         with:
           host: ${{ secrets.PROD2_HOST }}
           username: ${{ secrets.PROD2_USER }}
-          key: ${{ secrets.PROD2_PEM_KEY }}
+          key: ${{ secrets.PROD2_SSH_PRIVATE_KEY }}
           fingerprint: ${{ secrets.PROD2_HOST_FINGERPRINT }}
           port: ${{ secrets.PROD2_SSH_PORT }}
           script: |
