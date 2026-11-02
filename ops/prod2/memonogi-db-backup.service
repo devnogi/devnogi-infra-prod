@@ -1,0 +1,10 @@
+[Unit]
+Description=Memonogi MySQL logical backup
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/flock -n /run/lock/memonogi-backup.lock /usr/bin/node /opt/memonogi-backup/backup.mjs dump

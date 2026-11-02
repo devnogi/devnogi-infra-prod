@@ -1,0 +1,8 @@
+[Unit]
+Description=Weekly Memonogi Drive upload
+[Timer]
+OnCalendar=Sun *-*-* 06:30:00 Asia/Seoul
+Persistent=true
+Unit=memonogi-drive-upload.service
+[Install]
+WantedBy=timers.target

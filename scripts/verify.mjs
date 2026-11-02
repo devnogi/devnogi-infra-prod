@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const files = ['compose.local.yml', 'docker-compose-prod1.yml', 'docker-compose-prod2.yml'];
+const files = ['compose.local.yml', 'docker-compose-prod1.yml', 'docker-compose-prod2.yml', 'ops/prod2/compose.backup.yml'];
 const help = `사용법:
   node scripts/verify.mjs         로컬 DB bootstrap 테스트와 Compose 설정 검사
   node scripts/verify.mjs --help  도움말 표시
@@ -31,7 +31,7 @@ export function run(args = [], { runDocker = spawnSync, runTests = spawnSync, st
 
   let temp;
   try {
-    const tests = runTests(process.execPath, ['--test', join(root, 'tests', 'bootstrap-local-auth.test.mjs')], { stdio: 'inherit', shell: false });
+    const tests = runTests(process.execPath, ['--test', join(root, 'tests', 'bootstrap-local-auth.test.mjs'), join(root, 'tests', 'prod2-backup.test.mjs')], { stdio: 'inherit', shell: false });
     if (tests.error) throw new Error(`Bootstrap 테스트 실행 환경을 확인하세요: ${tests.error.message}`);
     if (tests.status !== 0) throw new Error(`Bootstrap 회귀 테스트 실패 (exit ${tests.status})`);
     temp = mkdtempSync(join(tmpdir(), 'devnogi-compose-verify-'));
@@ -46,6 +46,7 @@ export function run(args = [], { runDocker = spawnSync, runTests = spawnSync, st
     mkdirSync(dirname(join(temp, bootstrap)), { recursive: true });
     copyFileSync(join(root, bootstrap), join(temp, bootstrap));
     for (const file of files) {
+      mkdirSync(dirname(join(temp, file)), { recursive: true });
       copyFileSync(join(root, file), join(temp, file));
       const result = runDocker('docker', ['compose', '--project-directory', temp, '--env-file', fixture, '-f', join(temp, file), 'config', '--quiet'], { env, stdio: 'inherit' });
       if (result.error) throw new Error(`Docker Compose 실행 환경을 확인하세요: ${result.error.message}`);

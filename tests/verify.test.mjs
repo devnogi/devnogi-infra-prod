@@ -123,7 +123,7 @@ test('importing the module starts no verification or filesystem work', (t) => {
 
 test('no arguments checks all Compose files in order with synthetic environment and cleans up', () => {
   const streams = output();
-  const files = ['compose.local.yml', 'docker-compose-prod1.yml', 'docker-compose-prod2.yml'];
+  const files = ['compose.local.yml', 'docker-compose-prod1.yml', 'docker-compose-prod2.yml', 'ops/prod2/compose.backup.yml'];
   const fixture = join(dirname(dirname(script)), 'tests', 'compose.env');
   const calls = [];
   let temp;
@@ -131,13 +131,13 @@ test('no arguments checks all Compose files in order with synthetic environment 
     ...streams,
     runTests: (command, args, options) => {
       assert.equal(command, process.execPath);
-      assert.deepEqual(args, ['--test', join(dirname(dirname(script)), 'tests', 'bootstrap-local-auth.test.mjs')]);
+      assert.deepEqual(args, ['--test', join(dirname(dirname(script)), 'tests', 'bootstrap-local-auth.test.mjs'), join(dirname(dirname(script)), 'tests', 'prod2-backup.test.mjs')]);
       assert.equal(options.stdio, 'inherit');
       assert.equal(options.shell, false);
       return { status: 0 };
     },
     runDocker: (command, args, options) => {
-      calls.push(basename(args[6]));
+      calls.push(files[calls.length]);
       temp ??= args[2];
       assert.equal(command, 'docker');
       assert.deepEqual(args, ['compose', '--project-directory', temp, '--env-file', fixture, '-f', join(temp, files[calls.length - 1]), 'config', '--quiet']);

@@ -1,0 +1,8 @@
+[Unit]
+Description=Daily Memonogi MySQL backup
+[Timer]
+OnCalendar=*-*-* 05:30:00 Asia/Seoul
+Persistent=true
+Unit=memonogi-db-backup.service
+[Install]
+WantedBy=timers.target
