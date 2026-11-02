@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { dump, eligible, upload } from '../ops/prod2/backup.mjs';
 
 const at = new Date('2026-10-01T00:00:00Z');
@@ -70,6 +71,16 @@ test('verified upload filters active/partial files and prunes only old verified 
   assert.deepEqual(readdirSync(p.backup), []);
   assert.ok(JSON.parse(readFileSync(join(p.state, 'verified.json'), 'utf8'))['logs/auth/application.log-20261001.gz']);
   assert.ok(old);
+});
+
+test('log rotation delays compression and only compressed rotations are eligible', (t) => {
+  const config = readFileSync(fileURLToPath(new URL('../ops/prod2/logrotate.conf', import.meta.url)), 'utf8');
+  assert.match(config, /^\s*delaycompress\s*$/m);
+  const p = fixture(t);
+  const uncompressed = logFile(p, 'auth', 'application.log-20261001');
+  const compressed = logFile(p, 'auth', 'application.log-20260930.gz');
+  assert.deepEqual(eligible(p).map((entry) => entry.file), [compressed]);
+  assert.ok(readFileSync(uncompressed));
 });
 
 test('upload or verification failure preserves originals and avoids cleanup', async (t) => {
