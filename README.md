@@ -2,6 +2,8 @@
 
 Kafka·MinIO·MySQL·Redis의 운영 Compose와 로컬 개발용 의존 서비스를 관리하는 독립 저장소입니다. 애플리케이션 코드는 포함하지 않습니다.
 
+prod2 애플리케이션 로그, 일일 MySQL 백업 및 암호화된 Google Drive 보관의 설치·복구 절차는 [운영 가이드](ops/prod2/README.md)를 확인합니다. 실제 운영 적용은 별도 승인이 필요합니다.
+
 ## 표준 검증
 
 Node.js 20 이상, Bash(Windows는 Git for Windows), Docker Compose v2를 준비하고 실행합니다. 설정 검사에는 Docker 데몬이나 운영 비밀값이 필요하지 않습니다.

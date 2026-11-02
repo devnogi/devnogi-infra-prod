@@ -1,0 +1,12 @@
+services:
+  mysqldump:
+    image: mysql:8.0.42
+    entrypoint: ["mysqldump", "--defaults-extra-file=/run/secrets/mysql.cnf"]
+    volumes:
+      - /etc/memonogi-backup/mysql.cnf:/run/secrets/mysql.cnf:ro
+    networks:
+      - devnogi-network
+networks:
+  devnogi-network:
+    external: true
+    name: infra_devnogi-network
