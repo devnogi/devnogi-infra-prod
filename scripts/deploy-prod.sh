@@ -37,10 +37,37 @@ record_watchdog_marker() {
   mv "$temporary" "$state_dir/$name"
 }
 
-container_has_healthcheck() {
-  local container=$1 config_json
-  config_json=$(docker inspect --format '{{json .Config}}' "$container") || return 1
-  printf '%s\n' "$config_json" | grep -Eq '"Healthcheck":\{'
+healthcheck_mode_from_json() {
+  python3 -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+if value is None:
+    print("running")
+    raise SystemExit(0)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+test = value.get("Test")
+if test is None or test == []:
+    print("running")
+    raise SystemExit(0)
+if not isinstance(test, list) or not test or not all(isinstance(item, str) for item in test):
+    raise SystemExit(1)
+if test[0] == "NONE" and len(test) == 1:
+    print("running")
+elif test[0] in ("CMD", "CMD-SHELL") and len(test) >= 2 and all(item for item in test[1:]):
+    print("healthy")
+else:
+    raise SystemExit(1)
+'
+}
+
+container_health_mode() {
+  local container=$1 healthcheck_json
+  healthcheck_json=$(docker inspect --format '{{json .Config.Healthcheck}}' "$container") || return 1
+  printf '%s\n' "$healthcheck_json" | healthcheck_mode_from_json
 }
 
 container_health() {
@@ -90,11 +117,7 @@ current_ports_reproduce_runtime() {
 image_health_mode() {
   local image_id=$1 healthcheck_json
   healthcheck_json=$(docker image inspect --format '{{json .Config.Healthcheck}}' "$image_id") || return 1
-  if [[ $healthcheck_json != null && $healthcheck_json != '<nil>' && $healthcheck_json != '{}' ]]; then
-    printf 'healthy\n'
-  else
-    printf 'running\n'
-  fi
+  printf '%s\n' "$healthcheck_json" | healthcheck_mode_from_json
 }
 
 render_compose() {
@@ -168,15 +191,16 @@ PY
 }
 
 runtime_ready() {
-  local mode=$1 container=$2 state health
+  local mode=$1 container=$2 state health actual_mode
   state=$(docker inspect --format '{{.State.Status}}' "$container") || return 1
   [[ $state == running ]] || return 1
+  actual_mode=$(container_health_mode "$container") || return 1
   if [[ $mode == healthy ]]; then
-    container_has_healthcheck "$container" || return 1
+    [[ $actual_mode == healthy ]] || return 1
     health=$(container_health "$container") || return 1
     [[ $health == healthy ]]
   elif [[ $mode == running ]]; then
-    ! container_has_healthcheck "$container"
+    [[ $actual_mode == running ]]
   else
     return 1
   fi
@@ -204,7 +228,7 @@ candidate_ready() {
     valid_service "$service" || return 1
     container=$(docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
     [[ -n $container && $container != *$'\n'* ]] || return 1
-    if container_has_healthcheck "$container"; then candidate_mode=healthy; else candidate_mode=running; fi
+    candidate_mode=$(container_health_mode "$container") || return 1
     [[ $previous_mode != healthy || $candidate_mode == healthy ]] || return 1
     runtime_ready "$candidate_mode" "$container" || return 1
   done <"$state_dir/previous-readiness"
@@ -421,11 +445,9 @@ rollout_main() {
     valid_service "$container_project"
     [[ $container_service == "$service" ]]
     [[ $project == "$container_project" ]]
-    if container_has_healthcheck "$container"; then
+    readiness=$(container_health_mode "$container")
+    if [[ $readiness == healthy ]]; then
       [[ $(container_health "$container") == healthy ]]
-      readiness=healthy
-    else
-      readiness=running
     fi
     printf '%s|%s\n' "$service" "$readiness" >>"$state_dir/previous-readiness"
 
