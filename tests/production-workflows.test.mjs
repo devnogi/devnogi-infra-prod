@@ -10,22 +10,31 @@ for (const server of [1, 2]) {
     assert.doesNotMatch(workflow, /refs\/heads\/dev/);
     assert.match(workflow, new RegExp(`group: infra-production-server${server}`));
     assert.match(workflow, /cancel-in-progress: false/);
-    assert.match(workflow, new RegExp(`cp docker-compose-prod${server}\\.yml \\.previous-compose-prod${server}\\.yml`));
-    assert.match(workflow, new RegExp(`cp \\.previous-compose-prod${server}\\.yml docker-compose-prod${server}\\.yml`));
-    assert.match(workflow, /up -d --wait/);
+    assert.match(workflow, /runs-on: ubuntu-24\.04/);
+    assert.match(workflow, new RegExp(`run: bash scripts/deploy-prod-native\\.sh ${server} "\\$GITHUB_SHA"`));
+    assert.match(workflow, new RegExp(`PROD_HOST: \\$\\{\\{ secrets\\.PROD${server}_HOST \\}\\}`));
+    assert.match(workflow, new RegExp(`PROD_HOST_FINGERPRINT: \\$\\{\\{ secrets\\.PROD${server}_HOST_FINGERPRINT \\}\\}`));
+    assert.doesNotMatch(workflow, /appleboy\/(?:scp|ssh)-action/);
     assert.doesNotMatch(workflow, /down\s+-v|volume\s+rm|image prune/);
   });
 }
 
-test('server 2 stages the operations package on an Ubuntu 24.04 runner without applying privileged host changes', () => {
-  const workflow = readFileSync(new URL('../.github/workflows/deploy-prod2.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /runs-on: ubuntu-24\.04/);
-  assert.match(workflow, /run: bash scripts\/transfer-prod2\.sh/);
-  assert.match(workflow, /PROD2_SSH_PRIVATE_KEY: \$\{\{ secrets\.PROD2_PEM_KEY \}\}/);
-  assert.doesNotMatch(workflow, /appleboy\/scp-action/);
-  assert.match(workflow, /test -s incoming2\/ops\/prod2\/install-logging\.sh/);
-  assert.doesNotMatch(workflow, /sudo\s+sh\s+.*ops\/prod2\/install-logging\.sh/);
-  assert.doesNotMatch(workflow, /systemctl\s+(?:enable|start).*memonogi-(?:db-backup|drive-upload)\.timer/);
+test('shared native deployment scripts keep strict host verification and rollback invariants', () => {
+  const runner = readFileSync(new URL('../scripts/deploy-prod-native.sh', import.meta.url), 'utf8');
+  const remote = readFileSync(new URL('../scripts/deploy-prod.sh', import.meta.url), 'utf8');
+  assert.match(runner, /ssh-keyscan[^\n]+-t ed25519/);
+  assert.match(runner, /StrictHostKeyChecking=yes/);
+  assert.match(runner, /HostKeyAlgorithms=ssh-ed25519/);
+  assert.match(runner, /IdentitiesOnly=yes/);
+  assert.doesNotMatch(runner, /StrictHostKeyChecking=(?:no|accept-new)/);
+  assert.match(remote, /cp "\$previous_compose" "\$compose"/);
+  assert.match(remote, /cp "\$previous_env" "\$env_file"/);
+  assert.match(remote, /--pull never/);
+  assert.match(remote, /rollback_ready/);
+  assert.match(remote, /candidate_ready/);
+  assert.doesNotMatch(remote, /down\s+-v|volume\s+rm|image prune/);
+  assert.doesNotMatch(remote, /sudo\s+sh\s+.*ops\/prod2\/install-logging\.sh/);
+  assert.doesNotMatch(remote, /systemctl\s+(?:enable|start).*memonogi-(?:db-backup|drive-upload)\.timer/);
 });
 
 test('the prod2 logging runbook keeps privileged activation explicit and verifiable', () => {
