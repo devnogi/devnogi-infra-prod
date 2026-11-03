@@ -17,6 +17,7 @@ jobs:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     environment: production
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,4 +30,4 @@ jobs:
           PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD2_PEM_KEY }}
           PROD_HOST_FINGERPRINT: ${{ secrets.PROD2_HOST_FINGERPRINT }}
           PROD_ENV_FILE: ${{ secrets.PROD2_ENV_FILE }}
-        run: bash scripts/deploy-prod-native.sh 2 "$GITHUB_SHA"
+        run: bash scripts/deploy-prod-native.sh 2 "$GITHUB_SHA" "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

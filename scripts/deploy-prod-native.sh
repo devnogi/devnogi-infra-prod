@@ -4,8 +4,10 @@ umask 077
 
 server=${1:-}
 revision=${2:-}
+run=${3:-}
 [[ $server == 1 || $server == 2 ]] || { echo 'Invalid production server number' >&2; exit 1; }
 [[ $revision =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid production revision' >&2; exit 1; }
+[[ $run =~ ^[0-9]+-[0-9]+$ ]] || { echo 'Invalid production run identity' >&2; exit 1; }
 
 for name in PROD_HOST PROD_USER PROD_SSH_PORT PROD_SSH_PRIVATE_KEY PROD_HOST_FINGERPRINT PROD_ENV_FILE; do
   [[ -n ${!name:-} ]] || { echo "Missing $name" >&2; exit 1; }
@@ -17,15 +19,13 @@ done
 
 compose="docker-compose-prod${server}.yml"
 [[ -s $compose && -s scripts/deploy-prod.sh ]] || { echo 'Production deployment sources are missing' >&2; exit 1; }
-if [[ $server == 2 ]]; then
-  [[ -d ops/prod2 ]] || { echo 'Production operations package is missing' >&2; exit 1; }
-fi
+if [[ $server == 2 ]]; then [[ -d ops/prod2 ]] || { echo 'Production operations package is missing' >&2; exit 1; }; fi
 
 work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/infra-prod${server}-deploy.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 printf '%s\n' "$PROD_SSH_PRIVATE_KEY" >"$work/key"
-printf '%s\n' "$PROD_ENV_FILE" >"$work/.next-env-infra${server}"
-chmod 600 "$work/key" "$work/.next-env-infra${server}"
+printf '%s\n' "$PROD_ENV_FILE" >"$work/$compose.env"
+chmod 600 "$work/key" "$work/$compose.env"
 
 scan_ok=0
 for attempt in 1 2 3; do
@@ -43,9 +43,9 @@ fingerprint=$(ssh-keygen -E sha256 -lf "$work/known_hosts" 2>"$work/scan.log") |
 
 opts=(-i "$work/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$work/known_hosts" -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519 -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=2 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 destination="$PROD_USER@$PROD_HOST"
-incoming="/opt/infra/incoming${server}"
-staging_command="mkdir -p '$incoming' && chmod 700 '$incoming'"
-if [[ $server == 2 ]]; then staging_command="mkdir -p '$incoming/ops' && chmod 700 '$incoming' '$incoming/ops'"; fi
+stage="/opt/infra/.deploy-staging/prod${server}-${revision}-${run}"
+inputs="$stage/inputs"
+state="$stage/state"
 
 retry_transfer() {
   local label=$1 attempt
@@ -58,18 +58,58 @@ retry_transfer() {
   return 1
 }
 
-retry_transfer 'Remote staging preparation' ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "$staging_command"
-retry_transfer 'Compose transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" "$compose" "$destination:$incoming/$compose"
-retry_transfer 'Environment transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" "$work/.next-env-infra${server}" "$destination:$incoming/.next-env-infra${server}"
-retry_transfer 'Deployment script transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" scripts/deploy-prod.sh "$destination:$incoming/deploy-prod.sh"
+retry_transfer 'Remote immutable staging preparation' ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "umask 077; mkdir -p '/opt/infra/.deploy-staging'; mkdir '$stage'; mkdir '$inputs' '$state'"
+retry_transfer 'Compose transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" "$compose" "$destination:$inputs/$compose"
+retry_transfer 'Environment transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" "$work/$compose.env" "$destination:$inputs/.env.infra${server}"
+retry_transfer 'Deployment script transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" scripts/deploy-prod.sh "$destination:$inputs/deploy-prod.sh"
 if [[ $server == 2 ]]; then
-  retry_transfer 'Operations transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" -r ops/prod2 "$destination:$incoming/ops/"
+  retry_transfer 'Operations transfer' ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "mkdir '$inputs/ops'"
+  retry_transfer 'Operations package transfer' scp -P "$PROD_SSH_PORT" "${opts[@]}" -r ops/prod2 "$destination:$inputs/ops/"
 fi
-retry_transfer 'Remote staging permissions' ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "chmod 600 '$incoming/.next-env-infra${server}' && chmod 700 '$incoming/deploy-prod.sh'"
+retry_transfer 'Immutable staging permissions' ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "chmod -R go-rwx '$stage'; chmod 500 '$inputs'; find '$inputs' -type d -exec chmod 500 {} +; find '$inputs' -type f -exec chmod 400 {} +; chmod 700 '$state'"
 
-if ! ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "bash '$incoming/deploy-prod.sh' '$server' '$revision'" >"$work/deploy.log" 2>&1; then
-  sed -E 's/(PASSWORD|SECRET|TOKEN|KEY)=[^[:space:]]+/\1=<redacted>/g' "$work/deploy.log" >&2
-  echo 'Remote production deployment failed' >&2
-  exit 1
-fi
-cat "$work/deploy.log"
+set +e
+ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "nohup env DEPLOY_WATCHDOG_SECONDS='${DEPLOY_WATCHDOG_SECONDS:-600}' bash '$inputs/deploy-prod.sh' rollout '$server' '$revision' '$stage' </dev/null >'$stage/remote.log' 2>&1 &" >"$work/launch.log" 2>&1
+launch_status=$?
+set -e
+
+result=
+poll_attempts=${DEPLOY_POLL_ATTEMPTS:-150}
+poll_interval=${DEPLOY_POLL_INTERVAL_SECONDS:-5}
+[[ $poll_attempts =~ ^[1-9][0-9]{0,2}$ && $poll_attempts -le 300 ]]
+[[ $poll_interval =~ ^[0-9]$ ]]
+for _ in $(seq 1 "$poll_attempts"); do
+  result=$(ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "test ! -f '$state/result' || cat '$state/result'" 2>/dev/null) || true
+  [[ -z $result ]] || break
+  sleep "$poll_interval"
+done
+
+cleanup_stage() {
+  ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "rm -rf '$stage'" >/dev/null 2>&1 || true
+}
+
+case $result in
+  DEPLOY_RESULT=SUCCESS)
+    cleanup_stage
+    echo "Production deployment verified for server $server"
+    ;;
+  DEPLOY_RESULT=ROLLED_BACK)
+    cleanup_stage
+    echo 'Production deployment failed; the pre-change runtime was restored' >&2
+    exit 1
+    ;;
+  DEPLOY_RESULT=PREFLIGHT_FAILED)
+    cleanup_stage
+    echo 'Production deployment preflight failed before mutation' >&2
+    exit 1
+    ;;
+  DEPLOY_RESULT=ROLLBACK_FAILED)
+    echo 'Production deployment and rollback verification failed' >&2
+    exit 2
+    ;;
+  *)
+    [[ $launch_status -eq 0 ]] || echo 'The launch SSH connection ended before acknowledgement' >&2
+    echo 'Production deployment ended without a verified durable result' >&2
+    exit 1
+    ;;
+esac

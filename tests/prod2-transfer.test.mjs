@@ -23,7 +23,9 @@ function runNative(t, {
   actualFingerprint = trusted,
   port = '46232',
   scpFailures = 0,
-  deployFailure = false,
+  durableResult = 'SUCCESS',
+  launchDisconnect = false,
+  run = '98765-2',
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'infra-native-deploy-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -55,17 +57,21 @@ printf '%s\n' "$*" >>"$FIXTURE/scp.args"
   executable(join(bin, 'ssh'), `#!/bin/sh
 printf '%s\n' "$*" >>"$FIXTURE/ssh.args"
 case "$*" in
-  *'bash '*deploy-prod.sh*)
-    if [ "${deployFailure ? 'yes' : 'no'}" = yes ]; then
-      echo 'simulated remote failure' >&2
-      exit 1
-    fi
-    echo 'simulated deployment success'
+  *nohup*deploy-prod.sh*rollout*)
+    touch "$FIXTURE/launched"
+    [ -z '${durableResult}' ] || printf 'DEPLOY_RESULT=%s\n' '${durableResult}' >"$FIXTURE/remote.result"
+    [ '${launchDisconnect ? 'yes' : 'no'}' = no ] || exit 255
+    ;;
+  *state/result*)
+    [ ! -f "$FIXTURE/remote.result" ] || cat "$FIXTURE/remote.result"
+    ;;
+  *'rm -rf'*)
+    touch "$FIXTURE/cleaned"
     ;;
 esac
 `);
 
-  const command = 'if command -v cygpath >/dev/null; then FIXTURE=$(cygpath -u "$FIXTURE"); SCRIPT=$(cygpath -u "$SCRIPT"); fi; export FIXTURE SCRIPT PATH="$FIXTURE/bin:$PATH"; exec "$SCRIPT" "$SERVER" "$REVISION"';
+  const command = 'if command -v cygpath >/dev/null; then FIXTURE=$(cygpath -u "$FIXTURE"); SCRIPT=$(cygpath -u "$SCRIPT"); fi; export FIXTURE SCRIPT PATH="$FIXTURE/bin:$PATH"; exec "$SCRIPT" "$SERVER" "$REVISION" "$RUN"';
   const result = spawnSync(bash, ['-c', command], {
     cwd: root,
     encoding: 'utf8',
@@ -76,6 +82,7 @@ esac
       SCRIPT: script,
       SERVER: String(server),
       REVISION: revision,
+      RUN: run,
       PROD_HOST: 'example.test',
       PROD_USER: 'deploy',
       PROD_SSH_PORT: port,
@@ -99,6 +106,10 @@ for (const server of [1, 2]) {
       assert.match(args, /IdentitiesOnly=yes/);
     }
     assert.match(sshArgs, /deploy-prod\.sh/);
+    assert.match(sshArgs, new RegExp(`prod${server}-${revision}-98765-2`));
+    assert.doesNotMatch(sshArgs + scpArgs, /\/opt\/infra\/(?:incoming|incoming2)\b/);
+    assert.equal(existsSync(join(root, 'launched')), true);
+    assert.equal(existsSync(join(root, 'cleaned')), true);
     assert.doesNotMatch(result.stdout + result.stderr, /test-private-key|fixture-only/);
   });
 }
@@ -127,9 +138,16 @@ for (const port of ['0', '65536', 'not-a-port', '46232 ']) {
 }
 
 test('native deployment reports remote failure without leaking secrets', (t) => {
-  const { result } = runNative(t, { deployFailure: true });
+  const { result } = runNative(t, { durableResult: '' });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Remote production deployment failed/);
-  assert.match(result.stderr, /simulated remote failure/);
+  assert.match(result.stderr, /without a verified durable result/);
+  assert.doesNotMatch(result.stdout + result.stderr, /test-private-key|fixture-only/);
+});
+
+test('native deployment keeps polling a durable result after launch SSH disconnects', (t) => {
+  const { root, result } = runNative(t, { launchDisconnect: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(root, 'launched')), true);
+  assert.equal(existsSync(join(root, 'cleaned')), true);
   assert.doesNotMatch(result.stdout + result.stderr, /test-private-key|fixture-only/);
 });

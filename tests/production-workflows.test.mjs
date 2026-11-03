@@ -11,7 +11,8 @@ for (const server of [1, 2]) {
     assert.match(workflow, new RegExp(`group: infra-production-server${server}`));
     assert.match(workflow, /cancel-in-progress: false/);
     assert.match(workflow, /runs-on: ubuntu-24\.04/);
-    assert.match(workflow, new RegExp(`run: bash scripts/deploy-prod-native\\.sh ${server} "\\$GITHUB_SHA"`));
+    assert.match(workflow, new RegExp(`run: bash scripts/deploy-prod-native\\.sh ${server} "\\$GITHUB_SHA" "\\$GITHUB_RUN_ID-\\$GITHUB_RUN_ATTEMPT"`));
+    assert.match(workflow, /timeout-minutes: 15/);
     assert.match(workflow, new RegExp(`PROD_HOST: \\$\\{\\{ secrets\\.PROD${server}_HOST \\}\\}`));
     assert.match(workflow, new RegExp(`PROD_HOST_FINGERPRINT: \\$\\{\\{ secrets\\.PROD${server}_HOST_FINGERPRINT \\}\\}`));
     assert.doesNotMatch(workflow, /appleboy\/(?:scp|ssh)-action/);
@@ -27,8 +28,14 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.match(runner, /HostKeyAlgorithms=ssh-ed25519/);
   assert.match(runner, /IdentitiesOnly=yes/);
   assert.doesNotMatch(runner, /StrictHostKeyChecking=(?:no|accept-new)/);
-  assert.match(remote, /cp "\$previous_compose" "\$compose"/);
-  assert.match(remote, /cp "\$previous_env" "\$env_file"/);
+  assert.match(runner, /\.deploy-staging\/prod\$\{server\}-\$\{revision\}-\$\{run\}/);
+  assert.match(runner, /DEPLOY_RESULT=SUCCESS/);
+  assert.match(remote, /watchdog_main/);
+  assert.match(remote, /record_result ROLLED_BACK/);
+  assert.match(remote, /cp "\$state_dir\/previous-compose\.yml" "\$root\/\$compose"/);
+  assert.match(remote, /cp "\$state_dir\/previous-env" "\$root\/\$env_file"/);
+  assert.match(remote, /cmp -s "\$state_dir\/current-render\/images\.map" "\$state_dir\/candidate-render\/images\.map"/);
+  assert.match(remote, /cmp -s "\$state_dir\/previous-resources\/\$service" "\$state_dir\/candidate-render\/resources\/\$service"/);
   assert.match(remote, /--pull never/);
   assert.match(remote, /rollback_ready/);
   assert.match(remote, /candidate_ready/);
