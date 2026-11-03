@@ -55,6 +55,10 @@ if [ "$SCENARIO" = final-marker-failure ] && [ "$name" = result ] && [ ! -f "$FI
 fi
 /usr/bin/mv "$@"
 case "$name" in commit-ready|watchdog-ack|result|finished) printf '%s\\n' "$name" >>"$FIXTURE/marker-order" ;; esac
+if [ "$SCENARIO" = kill-after-ack ] && [ "$name" = watchdog-ack ]; then
+  state_dir=\${destination%/*}
+  kill -STOP "$(cat "$state_dir/rollout-pid")"
+fi
 `);
   executable(join(bin, 'python3'), `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -254,6 +258,41 @@ test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=ROLLED_BACK
   return { ...fixture, result };
 }
 
+function runKilledAfterAck(t) {
+  const fixture = setupFixture(t, 2, 'kill-after-ack', '129-1');
+  const command = `
+if command -v cygpath >/dev/null; then FIXTURE=$(cygpath -u "$FIXTURE"); DEPLOY_ROOT=$(cygpath -u "$DEPLOY_ROOT"); STAGE=$(cygpath -u "$STAGE"); SCRIPT=$(cygpath -u "$SCRIPT"); fi
+export FIXTURE DEPLOY_ROOT STAGE SCRIPT PATH="$FIXTURE/bin:$PATH"
+"$SCRIPT" rollout 2 "$REVISION" "$STAGE" & rollout_pid=$!
+for _ in $(seq 1 300); do [ -f "$STAGE/state/watchdog-ack" ] && break; sleep 0.05; done
+[ -f "$STAGE/state/watchdog-ack" ]
+kill -KILL "$rollout_pid"
+wait "$rollout_pid" 2>/dev/null || true
+for _ in $(seq 1 400); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
+test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=ROLLED_BACK
+test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
+`;
+  const result = spawnSync(bash, ['-c', command], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      PATH: `${fixture.bin};${process.env.PATH}`,
+      FIXTURE: fixture.root,
+      DEPLOY_ROOT: fixture.root,
+      STAGE: fixture.stage,
+      SCRIPT: script,
+      REVISION: revision,
+      SERVER: '2',
+      SCENARIO: 'kill-after-ack',
+      LOCK_HELD: '0',
+      DEPLOY_WATCHDOG_SECONDS: '10',
+      DEPLOY_LOCK_WAIT_SECONDS: '10',
+    },
+  });
+  return { ...fixture, result };
+}
+
 for (const server of [1, 2]) {
   test(`server ${server} bootstraps from a running container without a healthcheck`, (t) => {
     const { root, state, result } = runDeployment(t, server, 'prior-no-health-success');
@@ -380,4 +419,15 @@ test('detached watchdog rolls back after the rollout parent is SIGKILLed', (t) =
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLED_BACK');
   assert.equal(readFileSync(join(root, 'docker-compose-prod1.yml'), 'utf8'), 'old-compose\n');
   assert.equal(existsSync(join(root, '.last-deployed-prod1-sha')), false);
+});
+
+test('watchdog rolls back exact prior state when the parent dies immediately after ACK', (t) => {
+  const { root, state, result } = runKilledAfterAck(t);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLED_BACK');
+  assert.equal(readFileSync(join(state, 'finished'), 'utf8').trim(), 'DEPLOY_FINISHED=1');
+  assert.equal(readFileSync(join(root, 'docker-compose-prod2.yml'), 'utf8'), 'old-compose\n');
+  assert.equal(readFileSync(join(root, '.env.infra2'), 'utf8'), 'old-env\n');
+  assert.match(readFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), 'utf8'), /previous-ops/);
+  assert.equal(existsSync(join(root, '.last-deployed-prod2-sha')), false);
 });

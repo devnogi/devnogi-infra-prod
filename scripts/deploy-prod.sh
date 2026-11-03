@@ -265,43 +265,49 @@ watchdog_main() {
   stage=${2:-}
   state_dir="$stage/state"
   parent_pid=${3:-}
-  local timeout=${DEPLOY_WATCHDOG_SECONDS:-600} elapsed=0
+  local timeout=${DEPLOY_WATCHDOG_SECONDS:-600} elapsed=0 acked=0 status=2 result_value=
   valid_path "$stage"
   [[ $parent_pid =~ ^[1-9][0-9]*$ ]]
   [[ $timeout =~ ^[1-9][0-9]{0,3}$ && $timeout -le 900 ]]
   exec 9>&- || true
 
-  while [[ ! -f $state_dir/result && ! -f $state_dir/commit-ready ]] && kill -0 "$parent_pid" 2>/dev/null && ((elapsed < timeout)); do
+  while kill -0 "$parent_pid" 2>/dev/null && ((elapsed < timeout)); do
+    if [[ $acked == 0 && -f $state_dir/commit-ready ]]; then
+      record_watchdog_ack
+      acked=1
+    fi
+    [[ -f $state_dir/result ]] && break
     sleep 1
     ((elapsed += 1))
   done
-  if [[ -f $state_dir/result ]]; then
-    record_watchdog_ack
-    exit 0
-  fi
-  if [[ -f $state_dir/commit-ready ]] && kill -0 "$parent_pid" 2>/dev/null; then
-    record_watchdog_ack
-    exit 0
-  fi
-  if kill -0 "$parent_pid" 2>/dev/null; then
+  if [[ ! -f $state_dir/result ]] && kill -0 "$parent_pid" 2>/dev/null && ((elapsed >= timeout)); then
     kill -TERM "$parent_pid" 2>/dev/null || true
     for _ in $(seq 1 15); do
-      [[ -f $state_dir/result ]] && exit 0
       kill -0 "$parent_pid" 2>/dev/null || break
       sleep 1
     done
     kill -KILL "$parent_pid" 2>/dev/null || true
   fi
 
-  load_state || { record_result ROLLBACK_FAILED; exit 2; }
+  load_state || { record_result ROLLBACK_FAILED; record_finished; exit 2; }
   exec 8>"$root/.deploy-prod${server}.lock"
   lock_wait=${DEPLOY_LOCK_WAIT_SECONDS:-60}
-  [[ $lock_wait =~ ^[1-9][0-9]?$ && $lock_wait -le 60 ]] || { record_result ROLLBACK_FAILED; exit 2; }
-  flock -w "$lock_wait" 8 || { record_result ROLLBACK_FAILED; exit 2; }
-  [[ -f $state_dir/result ]] && exit 0
-  if rollback; then status=1; else status=2; fi
+  [[ $lock_wait =~ ^[1-9][0-9]?$ && $lock_wait -le 60 ]] || { record_result ROLLBACK_FAILED; record_finished; exit 2; }
+  flock -w "$lock_wait" 8 || { record_result ROLLBACK_FAILED; record_finished; exit 2; }
+  if [[ -f $state_dir/result ]]; then
+    result_value=$(<"$state_dir/result")
+    case $result_value in
+      DEPLOY_RESULT=SUCCESS) status=0 ;;
+      DEPLOY_RESULT=ROLLED_BACK) status=1 ;;
+      DEPLOY_RESULT=ROLLBACK_FAILED) status=2 ;;
+      *) if rollback; then status=1; else status=2; fi ;;
+    esac
+  elif rollback; then
+    status=1
+  else
+    status=2
+  fi
   exec 8>&-
-  record_watchdog_ack
   record_finished
   exit "$status"
 }
@@ -336,6 +342,7 @@ rollout_main() {
   lock_wait=${DEPLOY_LOCK_WAIT_SECONDS:-60}
   [[ $lock_wait =~ ^[1-9][0-9]?$ && $lock_wait -le 60 ]]
   flock -w "$lock_wait" 9
+  lock_held=1
   [[ ! -e $state_dir/result ]]
 
   cp "$root/$compose" "$state_dir/previous-compose.yml"
@@ -406,6 +413,7 @@ rollout_main() {
   printf '%s\n' "$revision" >"$state_dir/revision"
   printf '%s\n' "$project" >"$state_dir/project"
   printf '%s\n' "$root" >"$state_dir/root"
+  printf '%s\n' "$$" >"$state_dir/rollout-pid"
   chmod -R go-rwx "$state_dir"
   if [[ $server == 2 ]]; then
     if [[ -e $root/incoming2/ops/prod2 || -L $root/incoming2/ops/prod2 ]]; then
@@ -429,11 +437,16 @@ rollout_main() {
     trap - ERR HUP INT TERM
     set +e
     load_state
+    if [[ ${lock_held:-0} != 1 ]]; then
+      exec 9>"$root/.deploy-prod${server}.lock"
+      flock -w "$lock_wait" 9
+      lock_held=1
+    fi
     rollback
     local status=$?
-    wait "$watchdog_pid" 2>/dev/null || true
     exec 9>&- || true
-    record_finished
+    lock_held=0
+    wait "$watchdog_pid" 2>/dev/null || true
     ((status == 0)) && exit 1
     exit 2
   }
@@ -448,11 +461,19 @@ rollout_main() {
 
   printf '%s\n' "$revision" >"$root/.last-deployed-prod${server}-sha"
   record_commit_ready
-  wait "$watchdog_pid" 2>/dev/null || true
+  ack_seen=0
+  for _ in $(seq 1 30); do
+    if [[ -f $state_dir/watchdog-ack ]]; then ack_seen=1; break; fi
+    kill -0 "$watchdog_pid" 2>/dev/null || break
+    sleep 1
+  done
+  [[ $ack_seen == 1 ]]
   [[ $(<"$state_dir/watchdog-ack") == WATCHDOG_ACK=1 ]]
   exec 9>&-
+  lock_held=0
   record_result SUCCESS
-  record_finished
+  wait "$watchdog_pid"
+  [[ $(<"$state_dir/finished") == DEPLOY_FINISHED=1 ]]
   trap - ERR HUP INT TERM
   echo "Production deployment passed for server $server"
 }
