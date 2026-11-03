@@ -44,10 +44,11 @@ test('shared native deployment scripts keep strict host verification and rollbac
   const commitReady = remote.indexOf('record_commit_ready', remote.indexOf('printf \'%s\\n\' "$revision"'));
   const ackCheck = remote.indexOf('[[ $ack_seen == 1 ]]', commitReady);
   const releaseLock = remote.indexOf('exec 9>&-', ackCheck);
-  const successResult = remote.indexOf('record_result SUCCESS', releaseLock);
-  const disarmRollback = remote.indexOf('trap - ERR HUP INT TERM', successResult);
-  const waitForWatchdog = remote.indexOf('wait "$watchdog_pid"', disarmRollback);
-  assert.ok(commitReady < ackCheck && ackCheck < releaseLock && releaseLock < successResult && successResult < disarmRollback && disarmRollback < waitForWatchdog);
+  const disarmSignals = remote.indexOf('trap - HUP INT TERM', releaseLock);
+  const successResult = remote.indexOf('record_result SUCCESS', disarmSignals);
+  const disarmError = remote.indexOf('trap - ERR', successResult);
+  const waitForWatchdog = remote.indexOf('wait "$watchdog_pid"', disarmError);
+  assert.ok(commitReady < ackCheck && ackCheck < releaseLock && releaseLock < disarmSignals && disarmSignals < successResult && successResult < disarmError && disarmError < waitForWatchdog);
   assert.match(remote, /--pull never/);
   assert.match(remote, /rollback_ready/);
   assert.match(remote, /candidate_ready/);

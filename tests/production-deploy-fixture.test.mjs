@@ -62,6 +62,11 @@ if [ "$SCENARIO" = final-marker-failure ] && [ "$name" = result ] && [ ! -f "$FI
 fi
 /usr/bin/mv "$@"
 case "$name" in commit-ready|watchdog-ack|watchdog-takeover|watchdog-lock-acquired|result|finished) printf '%s\\n' "$name" >>"$FIXTURE/marker-order" ;; esac
+if [ "$SCENARIO" = term-during-success-publish ] && [ "$name" = result ]; then
+  state_dir=\${destination%/*}
+  kill -TERM "$(cat "$state_dir/rollout-pid")"
+  sleep 0.1
+fi
 if [ "$SCENARIO" = kill-after-ack ] && [ "$name" = watchdog-ack ]; then
   state_dir=\${destination%/*}
   kill -STOP "$(cat "$state_dir/rollout-pid")"
@@ -332,6 +337,13 @@ for _ in $(seq 1 300); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; d
 test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=SUCCESS
 test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
 `;
+  } else if (scenario === 'term-during-success-publish') {
+    synchronization = `
+for _ in $(seq 1 300); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
+wait "$rollout_pid" 2>/dev/null || true
+test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=SUCCESS
+test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
+`;
   } else {
     synchronization = `
 for _ in $(seq 1 300); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
@@ -547,3 +559,16 @@ for (const [scenario, run] of [['term-after-success', '131-1'], ['term-after-fin
     assert.equal(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).filter((marker) => marker === 'result').length, 1);
   });
 }
+
+test('TERM after atomic SUCCESS publication but before mv return preserves SUCCESS', (t) => {
+  const run = '133-1';
+  const { root, state, result } = runTermWindow(t, 'term-during-success-publish', run);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.equal(readFileSync(join(state, 'finished'), 'utf8').trim(), 'DEPLOY_FINISHED=1');
+  assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+  assert.equal(existsSync(join(root, 'rollback-complete')), false);
+  assert.equal(readFileSync(join(root, 'docker-compose-prod2.yml'), 'utf8'), `candidate-${run}\n`);
+  assert.match(readFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), 'utf8'), new RegExp(run));
+  assert.equal(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).filter((marker) => marker === 'result').length, 1);
+});

@@ -480,8 +480,9 @@ rollout_main() {
   [[ $(<"$state_dir/watchdog-ack") == WATCHDOG_ACK=1 ]]
   exec 9>&-
   lock_held=0
+  trap - HUP INT TERM
   record_result SUCCESS
-  trap - ERR HUP INT TERM
+  trap - ERR
   wait "$watchdog_pid"
   echo "Production deployment passed for server $server"
 }
