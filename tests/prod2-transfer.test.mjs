@@ -25,6 +25,7 @@ function runNative(t, {
   scpFailures = 0,
   durableResult = 'SUCCESS',
   launchDisconnect = false,
+  cleanupFailure = false,
   run = '98765-2',
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'infra-native-deploy-'));
@@ -65,9 +66,11 @@ case "$*" in
   *state/result*)
     [ ! -f "$FIXTURE/remote.result" ] || cat "$FIXTURE/remote.result"
     ;;
-  *'rm -rf'*)
+  *'chmod -R u+rwX'*'rm -rf --'*'test ! -e'*)
+    [ '${cleanupFailure ? 'yes' : 'no'}' = no ] || exit 1
     touch "$FIXTURE/cleaned"
     ;;
+  *'rm -rf'*) exit 93 ;;
 esac
 `);
 
@@ -150,4 +153,31 @@ test('native deployment keeps polling a durable result after launch SSH disconne
   assert.equal(existsSync(join(root, 'launched')), true);
   assert.equal(existsSync(join(root, 'cleaned')), true);
   assert.doesNotMatch(result.stdout + result.stderr, /test-private-key|fixture-only/);
+});
+
+test('native deployment fails closed when a successful stage cannot be securely deleted', (t) => {
+  const { root, result } = runNative(t, { cleanupFailure: true });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /staging cleanup failed/);
+  assert.equal(existsSync(join(root, 'cleaned')), false);
+  assert.doesNotMatch(result.stdout + result.stderr, /test-private-key|fixture-only/);
+});
+
+test('failed deployment retains its protected stage for diagnosis', (t) => {
+  const { root, result } = runNative(t, { durableResult: 'ROLLED_BACK' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /retained for diagnosis/);
+  assert.equal(existsSync(join(root, 'cleaned')), false);
+});
+
+test('Linux cleanup restores owner directory permissions before deleting read-only inputs', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'infra-cleanup-permissions-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const stage = join(root, 'prod2-stage');
+  mkdirSync(join(stage, 'inputs'), { recursive: true });
+  writeFileSync(join(stage, 'inputs', '.env.infra2'), 'fixture-secret\n', { mode: 0o400 });
+  const command = 'if command -v cygpath >/dev/null; then STAGE=$(cygpath -u "$STAGE"); fi; chmod 500 "$STAGE/inputs"; chmod -R u+rwX "$STAGE" && rm -rf -- "$STAGE" && test ! -e "$STAGE"';
+  const result = spawnSync(bash, ['-c', command], { encoding: 'utf8', env: { ...process.env, STAGE: stage } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(stage), false);
 });

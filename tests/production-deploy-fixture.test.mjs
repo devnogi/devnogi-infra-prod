@@ -34,7 +34,7 @@ function setupFixture(t, server, scenario, run = '123-1') {
   writeFileSync(join(staleInputs, `.env.infra${server}`), 'stale-env\n');
   if (server === 2) {
     mkdirSync(join(inputs, 'ops', 'prod2'), { recursive: true });
-    writeFileSync(join(inputs, 'ops', 'prod2', 'install-logging.sh'), '#!/bin/sh\n');
+    writeFileSync(join(inputs, 'ops', 'prod2', 'install-logging.sh'), `#!/bin/sh\n# ${run}\n`);
   }
   writeFileSync(join(root, `docker-compose-prod${server}.yml`), 'old-compose\n');
   writeFileSync(join(root, `.env.infra${server}`), 'old-env\n');
@@ -45,8 +45,18 @@ function setupFixture(t, server, scenario, run = '123-1') {
   executable(join(bin, 'python3'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+if (process.argv[2] === '-c') {
+  const data = JSON.parse(fs.readFileSync(0, 'utf8'));
+  process.stdout.write((typeof data.name === 'string' ? data.name : '') + '\\n');
+  process.exit(0);
+}
 const source = process.argv[3];
 const output = process.argv[4];
+if (fs.statSync(source).isDirectory()) {
+  fs.rmSync(output, { recursive: true, force: true });
+  fs.renameSync(source, output);
+  process.exit(0);
+}
 const data = JSON.parse(fs.readFileSync(source, 'utf8'));
 const images = [];
 const healthchecks = [];
@@ -61,6 +71,8 @@ for (const name of Object.keys(data.services).sort()) {
   }
   for (const network of Object.keys(service.networks || {}).sort()) resources.push('N|' + data.networks[network].name);
   fs.writeFileSync(path.join(output, 'resources', name), resources.sort().join('\\n') + (resources.length ? '\\n' : ''));
+  const ports = (service.ports || []).map((port) => ['P', port.target + '/' + (port.protocol || 'tcp'), port.host_ip || '0.0.0.0', port.published].join('|'));
+  fs.writeFileSync(path.join(output, 'ports', name), ports.sort().join('\\n') + (ports.length ? '\\n' : ''));
 }
 fs.writeFileSync(path.join(output, 'images.map'), images.join('\\n') + '\\n');
 fs.writeFileSync(path.join(output, 'healthchecks.map'), healthchecks.join('\\n') + '\\n');
@@ -68,26 +80,32 @@ fs.writeFileSync(path.join(output, 'healthchecks.map'), healthchecks.join('\\n')
   executable(join(bin, 'docker'), `#!/bin/sh
 set -eu
 args="$*"
+printf '%s\n' "$args" >>"$FIXTURE/docker.args"
 candidate=0
 case "$args" in *'.deploy-staging/'*'/inputs/docker-compose-'*) candidate=1 ;; esac
 case "$args" in
-  *' config --services') printf 'app\\ncache\\n' ;;
+  *' config --services')
+    case "$args" in *'--project-name infra'*'--project-directory '*) ;; *) echo 'missing exact project identity' >&2; exit 92 ;; esac
+    printf 'app\\ncache\\n'
+    ;;
   *' config --format json')
     app_image=image/app:1
     cache_image=image/cache:1
     app_source=/srv/app
     app_health='"test":["CMD","true"]'
+    if [ "$SERVER" = 2 ]; then app_host=127.0.0.1; cache_host=127.0.0.1; else app_host=0.0.0.0; cache_host=0.0.0.0; fi
     if [ "$candidate" = 1 ]; then
       [ "$SCENARIO" != image-swap ] || { app_image=image/cache:1; cache_image=image/app:1; }
       [ "$SCENARIO" != resource-mismatch ] || app_source=/srv/other
       [ "$SCENARIO" != healthy-to-no-health ] || app_health=
       [ "$SCENARIO" != healthy-to-disabled-health ] || app_health='"disable":true'
+      [ "$SCENARIO" != candidate-wildcard ] || app_host=0.0.0.0
     fi
     if [ -n "$app_health" ]; then health=",\\\"healthcheck\\\":{\${app_health}}"; else health=; fi
-    printf '{"services":{"app":{"image":"%s","volumes":[{"type":"bind","source":"%s","target":"/data"}],"networks":{"default":{}}%s},"cache":{"image":"%s","volumes":[{"type":"volume","source":"cache-data","target":"/cache"}],"networks":{"default":{}},"healthcheck":{"test":["CMD","true"]}}},"volumes":{"cache-data":{"name":"infra_cache-data"}},"networks":{"default":{"name":"infra_devnogi-network"}}}\\n' "$app_image" "$app_source" "$health" "$cache_image"
+    printf '{"name":"infra","services":{"app":{"image":"%s","volumes":[{"type":"bind","source":"%s","target":"/data"}],"networks":{"default":{}},"ports":[{"target":8080,"published":"18080","protocol":"tcp","host_ip":"%s"}]%s},"cache":{"image":"%s","volumes":[{"type":"volume","source":"cache-data","target":"/cache"}],"networks":{"default":{}},"ports":[{"target":6379,"published":"16379","protocol":"tcp","host_ip":"%s"}],"healthcheck":{"test":["CMD","true"]}}},"volumes":{"cache-data":{"name":"infra_cache-data"}},"networks":{"default":{"name":"infra_devnogi-network"}}}\\n' "$app_image" "$app_source" "$app_host" "$health" "$cache_image" "$cache_host"
     ;;
-  *' ps --all -q app') echo container-app ;;
-  *' ps --all -q cache') echo container-cache ;;
+  *' ps --all -q app') case "$args" in *'--project-name infra'*'--project-directory '*) echo container-app ;; *) exit 92 ;; esac ;;
+  *' ps --all -q cache') case "$args" in *'--project-name infra'*'--project-directory '*) echo container-cache ;; *) exit 92 ;; esac ;;
   'inspect --format {{index .Config.Labels "com.docker.compose.project"}} container-'*) echo infra ;;
   'inspect --format {{index .Config.Labels "com.docker.compose.service"}} container-app') echo app ;;
   'inspect --format {{index .Config.Labels "com.docker.compose.service"}} container-cache') echo cache ;;
@@ -109,7 +127,7 @@ case "$args" in
   'inspect --format {{.State.Health.Status}} container-'*)
     if [ "$SCENARIO" = prior-unhealthy ] && [ ! -f "$FIXTURE/started" ] && [ "$args" = 'inspect --format {{.State.Health.Status}} container-app' ]; then
       echo unhealthy
-    elif [ "$SCENARIO" = candidate-unhealthy ] && [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then
+    elif { [ "$SCENARIO" = candidate-unhealthy ] || [ "$SCENARIO" = rollback-port-mismatch ]; } && [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then
       echo unhealthy
     elif [ "$SCENARIO" = recovery-unhealthy ] && [ -f "$FIXTURE/rollback-complete" ]; then
       echo unhealthy
@@ -119,6 +137,21 @@ case "$args" in
     ;;
   'inspect --format {{.Image}} container-app') echo '${imageApp}' ;;
   'inspect --format {{.Image}} container-cache') echo '${imageCache}' ;;
+  *NetworkSettings.Ports*container-app)
+    if [ ! -f "$FIXTURE/started" ]; then host=0.0.0.0
+    elif [ -f "$FIXTURE/rollback-complete" ]; then if [ "$SCENARIO" = rollback-port-mismatch ]; then host=127.0.0.1; else host=0.0.0.0; fi
+    elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
+    elif [ "$SERVER" = 2 ]; then host=127.0.0.1
+    else host=0.0.0.0; fi
+    printf 'P|8080/tcp|%s|18080\\n' "$host"
+    ;;
+  *NetworkSettings.Ports*container-cache)
+    if [ ! -f "$FIXTURE/started" ] || [ -f "$FIXTURE/rollback-complete" ]; then host=0.0.0.0
+    elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
+    elif [ "$SERVER" = 2 ]; then host=127.0.0.1
+    else host=0.0.0.0; fi
+    printf 'P|6379/tcp|%s|16379\\n' "$host"
+    ;;
   *Mounts*container-app) printf 'M|bind|/srv/app|/data|true\\n' ;;
   *Mounts*container-cache) printf 'M|volume|infra_cache-data|/cache|true\\n' ;;
   *NetworkSettings.Networks*container-*) printf 'N|infra_devnogi-network\\n' ;;
@@ -201,12 +234,19 @@ test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=ROLLED_BACK
 for (const server of [1, 2]) {
   test(`server ${server} bootstraps from a running container without a healthcheck`, (t) => {
     const { root, state, result } = runDeployment(t, server, 'prior-no-health-success');
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, `${result.stderr}\n${readFileSync(join(root, 'docker.args'), 'utf8')}`);
     assert.match(readFileSync(join(state, 'previous-readiness'), 'utf8'), /app\|running/);
     assert.equal(readFileSync(join(root, `.last-deployed-prod${server}-sha`), 'utf8').trim(), revision);
     assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
     assert.equal(readFileSync(join(root, `docker-compose-prod${server}.yml`), 'utf8'), 'candidate-123-1\n');
     assert.equal(readFileSync(join(root, `.env.infra${server}`), 'utf8'), 'candidate-env-123-1\n');
+    const dockerArgs = readFileSync(join(root, 'docker.args'), 'utf8');
+    assert.match(dockerArgs, /--project-name infra/);
+    assert.match(dockerArgs, /--project-directory/);
+    assert.doesNotMatch(dockerArgs, /--project-name state(?:\s|$)/);
+    if (server === 2) {
+      assert.match(readFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), 'utf8'), /123-1/);
+    }
   });
 
   test(`server ${server} rejects an unhealthy prior container before mutation`, (t) => {
@@ -259,6 +299,22 @@ for (const server of [1, 2]) {
     assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLBACK_FAILED');
   });
 
+  test(`server ${server} rejects a candidate runtime port mismatch and rolls back`, (t) => {
+    const { state, result } = runDeployment(t, server, 'candidate-runtime-wildcard');
+    if (server === 1) {
+      assert.equal(result.status, 0, result.stderr);
+    } else {
+      assert.notEqual(result.status, 0);
+      assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLED_BACK');
+    }
+  });
+
+  test(`server ${server} rejects a rollback port mismatch`, (t) => {
+    const { state, result } = runDeployment(t, server, 'rollback-port-mismatch');
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLBACK_FAILED');
+  });
+
   test(`server ${server} refuses an overlapping orphan deployment without mutation`, (t) => {
     const { root, state, result } = runDeployment(t, server, 'success', { lockHeld: true, run: '124-1' });
     assert.notEqual(result.status, 0);
@@ -267,6 +323,13 @@ for (const server of [1, 2]) {
     assert.equal(readFileSync(join(root, `docker-compose-prod${server}.yml`), 'utf8'), 'old-compose\n');
   });
 }
+
+test('prod2 rejects a wildcard candidate binding before mutation', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'candidate-wildcard', { run: '126-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+  assert.equal(existsSync(join(root, 'started')), false);
+});
 
 test('detached watchdog rolls back after the rollout parent is SIGKILLed', (t) => {
   const { root, state, result } = runKilledDeployment(t, 1);

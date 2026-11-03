@@ -31,10 +31,15 @@ inspect_resources() {
   } | sed '/^$/d' | sort
 }
 
+inspect_ports() {
+  docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{if $bindings}}{{range $bindings}}P|{{$port}}|{{.HostIp}}|{{.HostPort}}{{"\n"}}{{end}}{{end}}{{end}}' "$1" |
+    sed '/^$/d' | sort
+}
+
 render_compose() {
   local compose_file=$1 environment_file=$2 output_dir=$3 rendered
   rendered="$output_dir/rendered.json"
-  mkdir -p "$output_dir/resources"
+  mkdir -p "$output_dir/resources" "$output_dir/ports"
   docker compose --project-name "$project" --project-directory "$root" -f "$compose_file" --env-file "$environment_file" config --format json >"$rendered"
   python3 - "$rendered" "$output_dir" <<'PY'
 import json, pathlib, re, sys
@@ -55,6 +60,7 @@ for name in sorted(services):
     healthcheck = service.get("healthcheck")
     healthchecks.append(f"{name}|{'healthy' if isinstance(healthcheck, dict) and not healthcheck.get('disable', False) else 'running'}")
     resources = []
+    ports = []
     for mount in service.get("volumes", []):
         kind = mount.get("type")
         source_name = mount.get("source")
@@ -74,7 +80,22 @@ for name in sorted(services):
         if not isinstance(resolved, str) or not resolved:
             raise SystemExit("invalid network")
         resources.append(f"N|{resolved}")
+    for port in service.get("ports", []):
+        target = port.get("target")
+        published = port.get("published")
+        protocol = port.get("protocol", "tcp")
+        host_ip = port.get("host_ip") or "0.0.0.0"
+        if not isinstance(target, int) or not (1 <= target <= 65535):
+            raise SystemExit("invalid target port")
+        if isinstance(published, int):
+            published = str(published)
+        if not isinstance(published, str) or not published.isdigit() or not (1 <= int(published) <= 65535):
+            raise SystemExit("invalid published port")
+        if protocol not in ("tcp", "udp", "sctp") or not isinstance(host_ip, str) or not host_ip:
+            raise SystemExit("invalid port binding")
+        ports.append(f"P|{target}/{protocol}|{host_ip}|{published}")
     (out / "resources" / name).write_text("\n".join(sorted(resources)) + ("\n" if resources else ""), encoding="utf-8")
+    (out / "ports" / name).write_text("\n".join(sorted(ports)) + ("\n" if ports else ""), encoding="utf-8")
 (out / "images.map").write_text("\n".join(images) + "\n", encoding="utf-8")
 (out / "healthchecks.map").write_text("\n".join(healthchecks) + "\n", encoding="utf-8")
 PY
@@ -96,15 +117,18 @@ runtime_ready() {
 }
 
 same_runtime() {
-  local service container expected_image actual_resources
+  local expected_resources=$1 expected_ports=$2 service container expected_image actual_resources actual_ports
   while IFS='|' read -r service expected_image; do
     valid_service "$service" && [[ $expected_image =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-    container=$(docker compose --project-name "$project" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
+    container=$(docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
     [[ -n $container && $container != *$'\n'* ]] || return 1
     [[ $(docker inspect --format '{{.Image}}' "$container") == "$expected_image" ]] || return 1
     actual_resources="$state_dir/current-resources/$service"
     inspect_resources "$container" >"$actual_resources"
-    cmp -s "$state_dir/previous-resources/$service" "$actual_resources" || return 1
+    cmp -s "$expected_resources/$service" "$actual_resources" || return 1
+    actual_ports="$state_dir/current-ports/$service"
+    inspect_ports "$container" >"$actual_ports"
+    cmp -s "$expected_ports/$service" "$actual_ports" || return 1
   done <"$state_dir/previous-image-ids.map"
 }
 
@@ -112,24 +136,44 @@ candidate_ready() {
   local service previous_mode container candidate_mode
   while IFS='|' read -r service previous_mode; do
     valid_service "$service" || return 1
-    container=$(docker compose --project-name "$project" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
+    container=$(docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
     [[ -n $container && $container != *$'\n'* ]] || return 1
     if container_has_healthcheck "$container"; then candidate_mode=healthy; else candidate_mode=running; fi
     [[ $previous_mode != healthy || $candidate_mode == healthy ]] || return 1
     runtime_ready "$candidate_mode" "$container" || return 1
   done <"$state_dir/previous-readiness"
-  same_runtime
+  same_runtime "$state_dir/previous-resources" "$state_dir/candidate-render/ports"
 }
 
 rollback_ready() {
   local service expected container
   while IFS='|' read -r service expected; do
     valid_service "$service" || return 1
-    container=$(docker compose --project-name "$project" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
+    container=$(docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
     [[ -n $container && $container != *$'\n'* ]] || return 1
     runtime_ready "$expected" "$container" || return 1
   done <"$state_dir/previous-readiness"
-  same_runtime
+  same_runtime "$state_dir/previous-resources" "$state_dir/previous-ports"
+}
+
+promote_prod2_ops() {
+  local ops_parent="$root/incoming2/ops" ops_target="$root/incoming2/ops/prod2" ops_temporary="$root/incoming2/ops/.prod2-$revision-$$"
+  mkdir -p "$ops_parent"
+  cp -a "$inputs/ops/prod2" "$ops_temporary"
+  chmod -R go-rwx "$ops_temporary"
+  python3 - "$ops_temporary" "$ops_target" <<'PY'
+import ctypes, os, sys
+source, target = map(os.fsencode, sys.argv[1:])
+if os.path.lexists(target):
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.renameat2(-100, source, -100, target, 2) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+else:
+    os.rename(source, target)
+PY
+  chmod -R u+rwX "$ops_temporary" 2>/dev/null || true
+  rm -rf -- "$ops_temporary" || true
 }
 
 load_state() {
@@ -227,17 +271,19 @@ rollout_main() {
   cp "$root/$compose" "$state_dir/previous-compose.yml"
   cp "$root/$env_file" "$state_dir/previous-env"
   chmod 600 "$state_dir/previous-compose.yml" "$state_dir/previous-env"
-  services=$(docker compose -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" config --services)
+  project=$(docker compose --project-directory "$root" -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" config --format json |
+    python3 -c 'import json, sys; value=json.load(sys.stdin).get("name"); print(value if isinstance(value, str) else "")')
+  valid_service "$project"
+  services=$(docker compose --project-name "$project" --project-directory "$root" -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" config --services)
   [[ -n $services ]]
-  mkdir "$state_dir/previous-resources" "$state_dir/current-resources" "$state_dir/current-render" "$state_dir/candidate-render"
+  mkdir "$state_dir/previous-resources" "$state_dir/previous-ports" "$state_dir/current-resources" "$state_dir/current-ports" "$state_dir/current-render" "$state_dir/candidate-render"
   : >"$state_dir/previous-readiness"
   : >"$state_dir/previous-image-ids.map"
   printf 'services:\n' >"$state_dir/previous-images.yml"
 
-  project=
   for service in $services; do
     valid_service "$service"
-    containers=$(docker compose -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" ps --all -q "$service")
+    containers=$(docker compose --project-name "$project" --project-directory "$root" -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" ps --all -q "$service")
     set -- $containers
     [[ $# -eq 1 ]]
     container=$1
@@ -246,7 +292,7 @@ rollout_main() {
     container_service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")
     valid_service "$container_project"
     [[ $container_service == "$service" ]]
-    if [[ -z $project ]]; then project=$container_project; else [[ $project == "$container_project" ]]; fi
+    [[ $project == "$container_project" ]]
     if container_has_healthcheck "$container"; then
       [[ $(container_health "$container") == healthy ]]
       readiness=healthy
@@ -264,6 +310,7 @@ rollout_main() {
     printf '%s|%s\n' "$service" "$image_id" >>"$state_dir/previous-image-ids.map"
     printf '  %s:\n    image: "%s"\n' "$service" "$1" >>"$state_dir/previous-images.yml"
     inspect_resources "$container" >"$state_dir/previous-resources/$service"
+    inspect_ports "$container" >"$state_dir/previous-ports/$service"
   done
 
   render_compose "$state_dir/previous-compose.yml" "$state_dir/previous-env" "$state_dir/current-render"
@@ -271,6 +318,9 @@ rollout_main() {
   cmp -s "$state_dir/current-render/images.map" "$state_dir/candidate-render/images.map"
   for service in $services; do
     cmp -s "$state_dir/previous-resources/$service" "$state_dir/candidate-render/resources/$service"
+    if [[ $server == 2 ]]; then
+      awk -F '|' '$1 == "P" && $3 != "127.0.0.1" { bad=1 } END { exit (bad ? 1 : 0) }' "$state_dir/candidate-render/ports/$service"
+    fi
   done
   while IFS='|' read -r service previous_mode; do
     candidate_mode=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/candidate-render/healthchecks.map")
@@ -304,6 +354,7 @@ rollout_main() {
   chmod 600 "$root/$env_file"
   docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" up -d --wait --pull never
   candidate_ready
+  if [[ $server == 2 ]]; then promote_prod2_ops; fi
 
   trap - ERR HUP INT TERM
   printf '%s\n' "$revision" >"$root/.last-deployed-prod${server}-sha"

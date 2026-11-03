@@ -36,6 +36,10 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.match(remote, /cp "\$state_dir\/previous-env" "\$root\/\$env_file"/);
   assert.match(remote, /cmp -s "\$state_dir\/current-render\/images\.map" "\$state_dir\/candidate-render\/images\.map"/);
   assert.match(remote, /cmp -s "\$state_dir\/previous-resources\/\$service" "\$state_dir\/candidate-render\/resources\/\$service"/);
+  assert.match(remote, /incoming2\/ops\/prod2/);
+  assert.match(remote, /renameat2/);
+  assert.match(remote, /candidate-render\/ports/);
+  assert.match(remote, /previous-ports/);
   assert.match(remote, /--pull never/);
   assert.match(remote, /rollback_ready/);
   assert.match(remote, /candidate_ready/);
@@ -47,6 +51,7 @@ test('shared native deployment scripts keep strict host verification and rollbac
 test('the prod2 logging runbook keeps privileged activation explicit and verifiable', () => {
   const runbook = readFileSync(new URL('../docs/prod2-logging.md', import.meta.url), 'utf8');
   assert.match(runbook, /sudo sh incoming2\/ops\/prod2\/install-logging\.sh/);
+  assert.match(runbook, /원자적으로 승격/);
   assert.match(runbook, /sudo systemctl restart rsyslog/);
   assert.match(runbook, /sudo rsyslogd -N1/);
   assert.match(runbook, /LogConfig\.Type/);

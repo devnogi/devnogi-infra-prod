@@ -85,22 +85,24 @@ for _ in $(seq 1 "$poll_attempts"); do
 done
 
 cleanup_stage() {
-  ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "rm -rf '$stage'" >/dev/null 2>&1 || true
+  if ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "chmod -R u+rwX '$stage' && rm -rf -- '$stage' && test ! -e '$stage'" >"$work/cleanup.log" 2>&1; then
+    return 0
+  fi
+  echo 'Production staging cleanup failed; the protected stage was retained' >&2
+  return 1
 }
 
 case $result in
   DEPLOY_RESULT=SUCCESS)
-    cleanup_stage
+    cleanup_stage || exit 2
     echo "Production deployment verified for server $server"
     ;;
   DEPLOY_RESULT=ROLLED_BACK)
-    cleanup_stage
-    echo 'Production deployment failed; the pre-change runtime was restored' >&2
+    echo 'Production deployment failed; the pre-change runtime was restored and the protected stage was retained for diagnosis' >&2
     exit 1
     ;;
   DEPLOY_RESULT=PREFLIGHT_FAILED)
-    cleanup_stage
-    echo 'Production deployment preflight failed before mutation' >&2
+    echo 'Production deployment preflight failed before mutation; the protected stage was retained for diagnosis' >&2
     exit 1
     ;;
   DEPLOY_RESULT=ROLLBACK_FAILED)
