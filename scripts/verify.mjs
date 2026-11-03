@@ -31,7 +31,7 @@ export function run(args = [], { runDocker = spawnSync, runTests = spawnSync, st
 
   let temp;
   try {
-    const tests = runTests(process.execPath, ['--test', join(root, 'tests', 'bootstrap-local-auth.test.mjs'), join(root, 'tests', 'prod2-backup.test.mjs')], { stdio: 'inherit', shell: false });
+    const tests = runTests(process.execPath, ['--test', join(root, 'tests', 'bootstrap-local-auth.test.mjs'), join(root, 'tests', 'prod2-backup.test.mjs'), join(root, 'tests', 'prod2-origin.test.mjs')], { stdio: 'inherit', shell: false });
     if (tests.error) throw new Error(`Bootstrap 테스트 실행 환경을 확인하세요: ${tests.error.message}`);
     if (tests.status !== 0) throw new Error(`Bootstrap 회귀 테스트 실패 (exit ${tests.status})`);
     temp = mkdtempSync(join(tmpdir(), 'devnogi-compose-verify-'));

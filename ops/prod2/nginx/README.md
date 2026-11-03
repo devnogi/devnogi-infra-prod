@@ -1,0 +1,43 @@
+# prod2 direct-origin TLS and protection
+
+These reviewed fragments are additions to the existing host Nginx configuration, not a replacement vhost. Preserve every existing hostname, upstream, redirect, timeout, upload limit, security header, and TLS setting. Capture a root-only backup of the actual configuration and certificate references before changes. Changes to the production host and DNS follow the separately authorized rollout; this repository does not install these fragments automatically.
+
+## Inventory and reachability
+
+Record the active Nginx configuration (`nginx -T`, taking care not to expose sensitive information), Docker service names, published ports, networks, image digests, health checks, volumes, host and provider firewall rules, and their consumers. Confirm the Nginx-to-React, React-to-Gateway, Gateway-to-backends, and backend-to-MySQL/Redis/Elasticsearch paths, including any traffic from another host. Do not close an endpoint before its replacement path is verified. Keep the established SSH session and verify a separate recovery console before changing firewall rules. Record the rollback paths without storing credentials in Git.
+
+`docker-compose-prod2.yml` publishes MySQL 3316 and Redis 6389 on IPv4 loopback while their Docker network ports stay unchanged. Before applying, verify all consumers use the Docker network or a validated private route; other hosts can no longer reach those host ports. DataGrip's SSH tunnel must terminate at `127.0.0.1:3316` on prod2. Recreate only the targeted service using its existing project, environment, immutable image and volumes; validate each service and client before proceeding. Never use `down -v` or delete volumes. If a cross-host consumer requires the published port, stop and establish its private path first.
+
+Permit public TCP 80/443 and only the approved SSH/VPN management path at both host and provider firewalls. Check actual IPv4 and IPv6 reachability externally. Docker publishes can bypass conventional host firewall rules; inspect Docker forwarding rules and test from outside. A DNS-only web record reveals the origin address and removes Cloudflare's proxy protections. Nginx limits cannot prevent network-link saturation; confirm the provider's DDoS mitigation before direct public use.
+
+## HTTP-01 certificate and renewal
+
+Keep the Cloudflare proxy and DNS records unchanged during this phase. Check CAA, DNS A/AAAA paths, port 80 reachability, existing redirects/WAF and the two hostnames. Install Certbot for the host platform from its documented source. Prepare `/var/lib/memonogi-acme/.well-known/acme-challenge/` with permissions permitting Nginx to read challenge files. Install `acme-location.conf` as a root-owned Nginx snippet and include it inside **each** relevant port 80 server block. A server-level `return` executes before location selection: if present, move the existing HTTPS redirect into a `location /` block while retaining its original destination and status. Check `nginx -t`, reload, and verify a temporary non-secret challenge file over HTTP through the public path for both names, as well as an ordinary HTTP redirect. Remove only that identified test file afterward.
+
+If the installed Certbot Nginx plugin already owns renewal for these vhosts, use it for both names with an operator-monitored renewal contact:
+
+```sh
+sudo certbot --nginx --redirect -d memonogi.com -d www.memonogi.com
+```
+
+The webroot snippet remains an alternative when the Nginx plugin is unavailable or an operator has deliberately chosen webroot renewal. In that case issue with `certbot certonly --webroot -w /var/lib/memonogi-acme -d memonogi.com -d www.memonogi.com` after completing the challenge checks above. Do not mix authenticators without confirming the saved renewal configuration.
+
+If either challenge cannot be served through all published A/AAAA routes, do not switch DNS to force issuance; diagnose WAF/redirect/IPv6 or use DNS-01 with a zone-scoped DNS edit token stored root-only. Do not put the token in a command line, log, chat, or repository. Cloudflare Full (strict) accepts a valid public CA certificate. Point only the TLS vhosts whose `server_name` is covered by the issued certificate SANs (`memonogi.com` and `www.memonogi.com`) at the Certbot-managed `fullchain.pem` and `privkey.pem`. Keep `api.memonogi.com` and every other uncovered vhost on its existing valid certificate unless a separate certificate includes that name. Retain TLS 1.2/1.3, run `nginx -t`, then reload. Retain the existing Origin CA files in restricted storage through the rollback window. Check public proxy HTTPS and both covered hostnames immediately, then confirm the API vhost still presents its previous valid certificate.
+
+Confirm the installed Certbot timer or cron is enabled and scheduled. Install `renew-deploy-hook.sh` as root-owned mode 0755 under `/etc/letsencrypt/renewal-hooks/deploy/`; it runs `nginx -t` and reloads only after a successful test. Run `certbot renew --dry-run` and, if supported by the installed version, `certbot renew --dry-run --run-deploy-hooks`; independently check hook execution and Nginx health. Alert on renewal failures and certificate expiry. `--dry-run` alone does not prove the deploy hook executed.
+
+### 2026-11-03 production evidence
+
+The initial public certificate was issued and installed for `memonogi.com` and `www.memonogi.com` with Certbot 2.9.0's Nginx authenticator/installer while the Cloudflare proxy remained enabled. The API vhost retained its prior certificate. `nginx -t` succeeded before and after reload; direct TLS verification for both covered names succeeded without `-k`; and `certbot renew --cert-name memonogi.com --dry-run --run-deploy-hooks` completed successfully. Re-check these facts on every later rollout rather than treating this dated evidence as permanent state.
+
+## Client identity and observation-only limits
+
+Before including any limit snippets, inspect effective `real_ip` directives. Trust `CF-Connecting-IP` only from current Cloudflare published IP ranges, maintained and updated through an operational process. With direct traffic the peer must remain `$remote_addr`; never trust a direct client's forwarded headers. Verify a forged header from a direct connection does not change the limit key. Keep the current proxy trust behavior intact until both paths are tested.
+
+Include `limits-http.conf` in the `http` context. Include the corresponding location fragment only inside existing, explicitly identified authentication and expensive-query proxy locations; do not create new locations that shadow existing routing. Both request and connection limits are dry-run only. Values are initial observation thresholds, not production enforcement recommendations. Exclude health and ACME routes. Confirm Nginx 1.24 supports the directives, run `nginx -t`, reload, and observe dry-run log decisions over representative traffic including shared NAT, login, refresh, and bursts. Confirm the effective route and no new 429 responses. Adjust thresholds based on evidence; do not disable dry-run until a separately reviewed enforcement decision. Do not log cookies, tokens, or query values containing personal information.
+
+## Direct verification and recovery
+
+Before DNS cutover, from at least two independent Korean networks use `curl --resolve www.memonogi.com:443:<origin-address> https://www.memonogi.com/` without `-k`; repeat for the apex name, `/api/config`, `/api/auth/me` (unauthenticated 401 expected), ranking/horn APIs, and a static asset. Compare status, certificate verification, TTFB and total time to the proxied path. Verify login, redirects, cookies, health and backend connectivity using approved test accounts without changing production data. Confirm certificate SAN and expiry, external port exposure, DataGrip tunnel, 5xx and dry-run logs. A single client does not establish all ISP routes.
+
+DNS-only cutover is outside this change and needs a separate decision after direct testing and DDoS tradeoff review. Record current DNS proxy states/records and TTL, compare both paths during propagation, monitor errors and latency, and restore the prior proxied state if needed. To roll back the host configuration, restore the exact backed-up vhost/certificate references, run `nginx -t` and reload; verify proxy health. Restore the previous Compose file and immutable digest for the affected service, preserving all volumes and checking health. Restore firewall rules from the recorded snapshot using the retained session or recovery console. Disable only the new snippets/hooks if they caused the failure; never delete certificate material or application data as a rollback shortcut.

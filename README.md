@@ -4,6 +4,8 @@ Kafka·MinIO·MySQL·Redis의 운영 Compose와 로컬 개발용 의존 서비�
 
 prod2 애플리케이션 로그, 일일 MySQL 백업 및 암호화된 Google Drive 보관의 설치·복구 절차는 [운영 가이드](ops/prod2/README.md)를 확인합니다. 실제 운영 적용은 별도 승인이 필요합니다.
 
+공인 TLS, origin 접근 경계 및 요청 제한의 수동 적용·검증·복구 절차는 [origin 운영 가이드](ops/prod2/nginx/README.md)를 따릅니다.
+
 ## 표준 검증
 
 Node.js 20 이상, Bash(Windows는 Git for Windows), Docker Compose v2를 준비하고 실행합니다. 설정 검사에는 Docker 데몬이나 운영 비밀값이 필요하지 않습니다.
