@@ -44,6 +44,8 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.match(remote, /renameat2/);
   assert.match(remote, /candidate-render\/ports/);
   assert.match(remote, /previous-ports/);
+  assert.match(remote, /same_runtime "\$state_dir\/candidate-render\/resources" "\$state_dir\/candidate-render\/ports" normalized/);
+  assert.match(remote, /same_runtime "\$state_dir\/current-render\/resources" "\$state_dir\/previous-ports" exact/);
   const commitReady = remote.indexOf('record_commit_ready', remote.indexOf('printf \'%s\\n\' "$revision"'));
   const ackCheck = remote.indexOf('[[ $ack_seen == 1 ]]', commitReady);
   const releaseLock = remote.indexOf('exec 9>&-', ackCheck);
