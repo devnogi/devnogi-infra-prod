@@ -7,7 +7,7 @@ services:
     env_file:
       - .env.infra2
     ports:
-      - "3316:3316"
+      - "127.0.0.1:3316:3316"
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
       MYSQL_USER: ${DB_USER}
@@ -40,7 +40,7 @@ services:
     container_name: redis
     restart: unless-stopped
     ports:
-      - "6389:6389"
+      - "127.0.0.1:6389:6389"
     command: ["redis-server", "--port", "6389", "--requirepass", "${REDIS_PASSWORD}"]
     networks:
       - devnogi-network
