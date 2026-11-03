@@ -81,7 +81,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 if (process.argv[2] === '-c') {
   const data = JSON.parse(fs.readFileSync(0, 'utf8'));
-  process.stdout.write((typeof data.name === 'string' ? data.name : '') + '\\n');
+  if (data && typeof data.name === 'string') {
+    process.stdout.write(data.name + '\\n');
+  } else if (data === null || (data && typeof data === 'object' && (data.Test == null || data.Test.length === 0))) {
+    process.stdout.write('running\\n');
+  } else if (data && typeof data === 'object' && Array.isArray(data.Test) && data.Test.length === 1 && data.Test[0] === 'NONE') {
+    process.stdout.write('running\\n');
+  } else if (data && typeof data === 'object' && Array.isArray(data.Test) && data.Test.length >= 2 && ['CMD', 'CMD-SHELL'].includes(data.Test[0]) && data.Test.slice(1).every((item) => typeof item === 'string' && item.length > 0)) {
+    process.stdout.write('healthy\\n');
+  } else {
+    process.exit(1);
+  }
   process.exit(0);
 }
 const source = process.argv[3];
@@ -97,7 +107,8 @@ const healthchecks = [];
 for (const name of Object.keys(data.services).sort()) {
   const service = data.services[name];
   images.push(name + '|' + service.image);
-  healthchecks.push(name + '|' + (service.healthcheck && !service.healthcheck.disable ? 'healthy' : 'running'));
+  const healthcheckMode = !Object.hasOwn(service, 'healthcheck') ? 'absent' : (service.healthcheck?.disable ? 'disabled' : 'configured');
+  healthchecks.push(name + '|' + healthcheckMode);
   const resources = [];
   for (const mount of service.volumes || []) {
     const sourceValue = mount.type === 'volume' ? data.volumes[mount.source].name : mount.source;
@@ -130,12 +141,14 @@ case "$args" in
     app_host=0.0.0.0
     cache_host=0.0.0.0
     network_name=infra_devnogi-network
+    case "$SCENARIO" in image-health-success|image-health-disabled|image-none-success|none-runtime-image-active|active-runtime-image-none) app_health= ;; disabled-none-success) app_health='"disable":true' ;; esac
     if [ "$candidate" = 1 ]; then
       if [ "$SERVER" = 2 ]; then app_host=127.0.0.1; cache_host=127.0.0.1; fi
       [ "$SCENARIO" != image-swap ] || { app_image=image/cache:1; cache_image=image/app:1; }
       [ "$SCENARIO" != resource-mismatch ] || app_source=/srv/other
       [ "$SCENARIO" != healthy-to-no-health ] || app_health=
       [ "$SCENARIO" != healthy-to-disabled-health ] || app_health='"disable":true'
+      [ "$SCENARIO" != image-health-disabled ] || app_health='"disable":true'
       [ "$SCENARIO" != candidate-wildcard ] || app_host=0.0.0.0
     else
       [ "$SCENARIO" != prior-no-health-success ] || app_health=
@@ -154,6 +167,22 @@ case "$args" in
   'inspect --format {{index .Config.Labels "com.docker.compose.service"}} container-cache') echo cache ;;
   'inspect --format {{.State.Status}} container-'*)
     if [ "$SCENARIO" = prior-stopped ] && [ ! -f "$FIXTURE/started" ] && [ "$args" = 'inspect --format {{.State.Status}} container-app' ]; then echo exited; else echo running; fi
+    ;;
+  'inspect --format {{json .Config.Healthcheck}} container-'*)
+    service=\${args##*container-}
+    if [ "$service" = app ]; then
+      if [ "$SCENARIO" = prior-no-health-success ] && { [ ! -f "$FIXTURE/started" ] || [ -f "$FIXTURE/rollback-complete" ]; }; then
+        echo '{"Test":["NONE"]}'
+      else
+        case "$SCENARIO" in
+          disabled-none-success|image-none-success|none-runtime-configured|none-runtime-image-active) echo '{"Test":["NONE"]}' ;;
+          malformed-health-mode) echo '{"Test":["BOGUS","true"]}' ;;
+          *) echo '{"Test":["CMD","true"]}' ;;
+        esac
+      fi
+    else
+      echo '{"Test":["CMD","true"]}'
+    fi
     ;;
   'inspect --format {{json .Config}} container-'*)
     service=\${args##*container-}
@@ -181,7 +210,13 @@ case "$args" in
   'inspect --format {{.Image}} container-app') echo '${imageApp}' ;;
   'inspect --format {{.Image}} container-cache') echo '${imageCache}' ;;
   *NetworkSettings.Ports*container-app)
-    if [ ! -f "$FIXTURE/started" ]; then host=0.0.0.0
+    if [ ! -f "$FIXTURE/started" ]; then
+      case "$SCENARIO" in
+        ipv6-only-wildcard) printf 'P|8080/tcp|::|18080\\n'; exit 0 ;;
+        custom-ipv6-wildcard) printf 'P|8080/tcp|0.0.0.0|18080\\nP|8080/tcp|2001:db8::1|18080\\n'; exit 0 ;;
+        dual-stack-wildcard) printf 'P|8080/tcp|0.0.0.0|18080\\nP|8080/tcp|::|18080\\n'; exit 0 ;;
+      esac
+      host=0.0.0.0
     elif [ -f "$FIXTURE/rollback-complete" ]; then if [ "$SCENARIO" = rollback-port-mismatch ]; then host=127.0.0.1; else host=0.0.0.0; fi
     elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
     elif [ "$SERVER" = 2 ]; then host=127.0.0.1
@@ -189,7 +224,10 @@ case "$args" in
     printf 'P|8080/tcp|%s|18080\\n' "$host"
     ;;
   *NetworkSettings.Ports*container-cache)
-    if [ ! -f "$FIXTURE/started" ] || [ -f "$FIXTURE/rollback-complete" ]; then host=0.0.0.0
+    if [ ! -f "$FIXTURE/started" ]; then
+      if [ "$SCENARIO" = dual-stack-wildcard ]; then printf 'P|6379/tcp|0.0.0.0|16379\\nP|6379/tcp|::|16379\\n'; exit 0; fi
+      host=0.0.0.0
+    elif [ -f "$FIXTURE/rollback-complete" ]; then host=0.0.0.0
     elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
     elif [ "$SERVER" = 2 ]; then host=127.0.0.1
     else host=0.0.0.0; fi
@@ -198,6 +236,14 @@ case "$args" in
   *Mounts*container-app) printf 'M|bind|/srv/app|/data|true\\n' ;;
   *Mounts*container-cache) printf 'M|volume|infra_cache-data|/cache|true\\n' ;;
   *NetworkSettings.Networks*container-*) printf 'N|infra_devnogi-network\\n' ;;
+  *'image inspect --format {{json .Config.Healthcheck}}'*${imageApp})
+    case "$SCENARIO" in
+      image-health-success|image-health-disabled|none-runtime-image-active) echo '{"Test":["CMD","true"]}' ;;
+      image-none-success|disabled-none-success|none-runtime-configured|active-runtime-image-none) echo '{"Test":["NONE"]}' ;;
+      *) echo null ;;
+    esac
+    ;;
+  *'image inspect --format {{json .Config.Healthcheck}}'*${imageCache}) echo null ;;
   *image*inspect*${imageApp}) echo 'image/app@sha256:${'a'.repeat(64)}' ;;
   *image*inspect*${imageCache}) echo 'image/cache@sha256:${'b'.repeat(64)}' ;;
   *' up -d --wait --pull never')
@@ -482,6 +528,64 @@ test('prod2 rejects a wildcard candidate binding before mutation', (t) => {
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
   assert.equal(existsSync(join(root, 'started')), false);
 });
+
+test('prod2 accepts the exact Docker dual-stack expansion of a Compose wildcard before mutation', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'dual-stack-wildcard', { run: '134-1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+});
+
+for (const scenario of ['ipv6-only-wildcard', 'custom-ipv6-wildcard']) {
+  test(`prod2 rejects ${scenario} as unexpected runtime binding drift`, (t) => {
+    const { root, state, result } = runDeployment(t, 2, scenario, { run: '135-1' });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+    assert.equal(existsSync(join(root, 'started')), false);
+  });
+}
+
+test('prod2 accepts image-level healthcheck continuity for the exact pinned image', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'image-health-success', { run: '136-1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+});
+
+test('prod2 rejects explicitly disabling a proven image-level healthcheck', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'image-health-disabled', { run: '137-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+  assert.equal(existsSync(join(root, 'started')), false);
+});
+
+test('prod2 accepts disabled Compose health with runtime Test NONE as running continuity', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'disabled-none-success', { run: '138-1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.doesNotMatch(readFileSync(join(root, 'docker.args'), 'utf8'), /State\.Health\.Status}} container-app/);
+});
+
+test('prod2 accepts absent Compose health with pinned image Test NONE as running continuity', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'image-none-success', { run: '139-1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.doesNotMatch(readFileSync(join(root, 'docker.args'), 'utf8'), /State\.Health\.Status}} container-app/);
+});
+
+for (const [scenario, run] of [
+  ['none-runtime-configured', '140-1'],
+  ['none-runtime-image-active', '141-1'],
+  ['active-runtime-image-none', '142-1'],
+  ['malformed-health-mode', '143-1'],
+]) {
+  test(`prod2 rejects health metadata mismatch ${scenario} before mutation`, (t) => {
+    const { root, state, result } = runDeployment(t, 2, scenario, { run });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+    assert.equal(existsSync(join(root, 'started')), false);
+  });
+}
 
 for (const scenario of ['live-drift-mount', 'live-drift-network', 'live-drift-port', 'live-drift-readiness']) {
   test(`live ${scenario.replace('live-drift-', '')} drift aborts before mutation`, (t) => {
