@@ -1,6 +1,6 @@
 # prod2 로그 설정
 
-GitHub Actions가 `/opt/infra/incoming2/ops/prod2`에 운영 파일을 전송한 뒤 실행합니다. 이 작업은 로그 설정만 활성화하며 DB 백업·Drive 전송 타이머는 시작하지 않습니다.
+GitHub Actions는 revision별 staging으로 운영 파일을 전송하고, 검증된 prod2 rollout이 성공할 때 `/opt/infra/incoming2/ops/prod2`로 원자적으로 승격합니다. 이 작업은 로그 설정만 활성화하며 DB 백업·Drive 전송 타이머는 시작하지 않습니다.
 
 ## 1. 설정 설치
 

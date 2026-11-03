@@ -17,91 +17,17 @@ jobs:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     environment: production
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Require trusted server fingerprint
+      - name: Deploy with native Ed25519 SSH
         env:
-          HOST_FINGERPRINT: ${{ secrets.PROD2_HOST_FINGERPRINT }}
-        run: test -n "$HOST_FINGERPRINT"
-
-      - name: Copy docker-compose and operations package to Server 2
-        env:
-          PROD2_HOST: ${{ secrets.PROD2_HOST }}
-          PROD2_USER: ${{ secrets.PROD2_USER }}
-          PROD2_SSH_PORT: ${{ secrets.PROD2_SSH_PORT }}
-          PROD2_SSH_PRIVATE_KEY: ${{ secrets.PROD2_PEM_KEY }}
-          PROD2_HOST_FINGERPRINT: ${{ secrets.PROD2_HOST_FINGERPRINT }}
-        run: bash scripts/transfer-prod2.sh
-
-      - name: Create .env and Execute Docker
-        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
-        with:
-          host: ${{ secrets.PROD2_HOST }}
-          username: ${{ secrets.PROD2_USER }}
-          key: ${{ secrets.PROD2_PEM_KEY }}
-          fingerprint: ${{ secrets.PROD2_HOST_FINGERPRINT }}
-          port: ${{ secrets.PROD2_SSH_PORT }}
-          script: |
-            set -eu
-            umask 077
-            mkdir -p /opt/infra
-            cd /opt/infra
-            test -s docker-compose-prod2.yml
-            test -s .env.infra2
-            test -s incoming2/ops/prod2/install-logging.sh
-            cp docker-compose-prod2.yml .previous-compose-prod2.yml
-            cp .env.infra2 .previous-env-prod2
-            
-            cat << 'EOF' > .next-env-infra2
-            ${{ secrets.PROD2_ENV_FILE }}
-            EOF
-            services=$(docker compose -f .previous-compose-prod2.yml --env-file .env.infra2 config --services)
-            test -n "$services" || { echo 'No services available for rollback' >&2; exit 1; }
-            printf 'services:\n' > .previous-images-prod2.yml
-            for service in $services; do
-              containers=$(docker compose -f .previous-compose-prod2.yml --env-file .env.infra2 ps --all -q "$service")
-              set -- $containers
-              [ "$#" -eq 1 ] || { echo "Expected one prior container for $service" >&2; exit 1; }
-              health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$1")
-              [ "$health" = healthy ] || { echo "Missing or unhealthy readiness check for $service" >&2; exit 1; }
-              image=$(docker inspect --format '{{.Image}}' "$1")
-              test -n "$image"
-              digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image")
-              set -- $digests
-              [ "$#" -eq 1 ] || { echo "Missing or ambiguous digest for $service" >&2; exit 1; }
-              printf '%s\n' "$1" | grep -Eq '@sha256:[0-9a-f]{64}$' || { echo "Invalid digest for $service" >&2; exit 1; }
-              printf '  %s:\n    image: "%s"\n' "$service" "$1" >> .previous-images-prod2.yml
-            done
-            candidate_services=$(docker compose --project-directory /opt/infra -f incoming2/docker-compose-prod2.yml --env-file .next-env-infra2 config --services | sort)
-            test "$(printf '%s\n' "$services" | sort)" = "$candidate_services" || { echo 'Changed service set requires explicit image selection' >&2; exit 1; }
-            previous_images=$(docker compose -f .previous-compose-prod2.yml --env-file .env.infra2 config --images | sort)
-            candidate_images=$(docker compose --project-directory /opt/infra -f incoming2/docker-compose-prod2.yml --env-file .next-env-infra2 config --images | sort)
-            test "$previous_images" = "$candidate_images" || { echo 'Changed image declarations require an explicit digest promotion' >&2; exit 1; }
-            cp incoming2/docker-compose-prod2.yml docker-compose-prod2.yml
-            cp .next-env-infra2 .env.infra2
-            all_healthy() {
-              for service in $services; do
-                containers=$(docker compose -f docker-compose-prod2.yml -f .previous-images-prod2.yml --env-file .env.infra2 ps --all -q "$service") || return 1
-                set -- $containers
-                [ "$#" -eq 1 ] || return 1
-                [ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$1")" = healthy ] || return 1
-              done
-            }
-            if docker compose -f docker-compose-prod2.yml -f .previous-images-prod2.yml --env-file .env.infra2 up -d --wait --pull never && all_healthy; then
-              printf '%s\n' '${{ github.sha }}' > .last-deployed-prod2-sha
-            else
-              cp .previous-compose-prod2.yml docker-compose-prod2.yml
-              cp .previous-env-prod2 .env.infra2
-              if docker compose -f docker-compose-prod2.yml -f .previous-images-prod2.yml --env-file .env.infra2 up -d --wait --pull never; then
-                if all_healthy; then
-                  echo 'Rollback health verification passed'
-                else
-                  echo 'Rollback health verification failed' >&2
-                fi
-              else
-                echo 'Rollback failed' >&2
-              fi
-              exit 1
-            fi
+          PROD_HOST: ${{ secrets.PROD2_HOST }}
+          PROD_USER: ${{ secrets.PROD2_USER }}
+          PROD_SSH_PORT: ${{ secrets.PROD2_SSH_PORT }}
+          PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD2_PEM_KEY }}
+          PROD_HOST_FINGERPRINT: ${{ secrets.PROD2_HOST_FINGERPRINT }}
+          PROD_ENV_FILE: ${{ secrets.PROD2_ENV_FILE }}
+        run: bash scripts/deploy-prod-native.sh 2 "$GITHUB_SHA" "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
