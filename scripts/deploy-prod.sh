@@ -267,7 +267,7 @@ runtime_ready() {
 }
 
 same_runtime() {
-  local expected_resources=$1 expected_ports=$2 service container expected_image actual_resources actual_ports
+  local expected_resources=$1 expected_ports=$2 port_mode=$3 service container expected_image actual_resources actual_ports
   while IFS='|' read -r service expected_image; do
     valid_service "$service" && [[ $expected_image =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
     container=$(docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
@@ -278,7 +278,13 @@ same_runtime() {
     runtime_resources_reproduce_render "$container" "$expected_image" "$actual_resources" "$expected_resources/$service" || return 1
     actual_ports="$state_dir/current-ports/$service"
     inspect_ports "$container" >"$actual_ports"
-    cmp -s "$expected_ports/$service" "$actual_ports" || return 1
+    if [[ $port_mode == normalized ]]; then
+      current_ports_reproduce_runtime "$actual_ports" "$expected_ports/$service" || return 1
+    elif [[ $port_mode == exact ]]; then
+      cmp -s "$expected_ports/$service" "$actual_ports" || return 1
+    else
+      return 1
+    fi
   done <"$state_dir/previous-image-ids.map"
 }
 
@@ -292,7 +298,7 @@ candidate_ready() {
     [[ $previous_mode != healthy || $candidate_mode == healthy ]] || return 1
     runtime_ready "$candidate_mode" "$container" || return 1
   done <"$state_dir/previous-readiness"
-  same_runtime "$state_dir/candidate-render/resources" "$state_dir/candidate-render/ports"
+  same_runtime "$state_dir/candidate-render/resources" "$state_dir/candidate-render/ports" normalized
 }
 
 rollback_ready() {
@@ -303,7 +309,7 @@ rollback_ready() {
     [[ -n $container && $container != *$'\n'* ]] || return 1
     runtime_ready "$expected" "$container" || return 1
   done <"$state_dir/previous-readiness"
-  same_runtime "$state_dir/current-render/resources" "$state_dir/previous-ports"
+  same_runtime "$state_dir/current-render/resources" "$state_dir/previous-ports" exact
 }
 
 atomic_replace_path() {

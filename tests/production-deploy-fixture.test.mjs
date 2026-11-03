@@ -259,7 +259,7 @@ case "$args" in
   'inspect --format {{.State.Health.Status}} container-'*)
     if [ "$SCENARIO" = prior-unhealthy ] && [ ! -f "$FIXTURE/started" ] && [ "$args" = 'inspect --format {{.State.Health.Status}} container-app' ]; then
       echo unhealthy
-    elif { [ "$SCENARIO" = candidate-unhealthy ] || [ "$SCENARIO" = rollback-port-mismatch ]; } && [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then
+    elif { [ "$SCENARIO" = candidate-unhealthy ] || [ "$SCENARIO" = rollback-port-mismatch ] || [ "$SCENARIO" = rollback-added-ipv6 ]; } && [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then
       echo unhealthy
     elif [ "$SCENARIO" = recovery-unhealthy ] && [ -f "$FIXTURE/rollback-complete" ]; then
       echo unhealthy
@@ -277,7 +277,12 @@ case "$args" in
         dual-stack-wildcard) printf 'P|8080/tcp|0.0.0.0|18080\\nP|8080/tcp|::|18080\\n'; exit 0 ;;
       esac
       host=0.0.0.0
-    elif [ -f "$FIXTURE/rollback-complete" ]; then if [ "$SCENARIO" = rollback-port-mismatch ]; then host=127.0.0.1; else host=0.0.0.0; fi
+    elif [ -f "$FIXTURE/rollback-complete" ]; then
+      if [ "$SCENARIO" = rollback-added-ipv6 ]; then printf 'P|8080/tcp|0.0.0.0|18080\\nP|8080/tcp|::|18080\\n'; exit 0
+      elif [ "$SCENARIO" = rollback-port-mismatch ]; then host=127.0.0.1
+      else host=0.0.0.0
+      fi
+    elif [ "$SCENARIO" = candidate-dual-stack-wildcard ]; then printf 'P|8080/tcp|0.0.0.0|18080\\nP|8080/tcp|::|18080\\n'; exit 0
     elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
     elif [ "$SERVER" = 2 ]; then host=127.0.0.1
     else host=0.0.0.0; fi
@@ -287,7 +292,11 @@ case "$args" in
     if [ ! -f "$FIXTURE/started" ]; then
       if [ "$SCENARIO" = dual-stack-wildcard ]; then printf 'P|6379/tcp|0.0.0.0|16379\\nP|6379/tcp|::|16379\\n'; exit 0; fi
       host=0.0.0.0
-    elif [ -f "$FIXTURE/rollback-complete" ]; then host=0.0.0.0
+    elif [ -f "$FIXTURE/rollback-complete" ]; then
+      if [ "$SCENARIO" = rollback-added-ipv6 ]; then printf 'P|6379/tcp|0.0.0.0|16379\\nP|6379/tcp|::|16379\\n'; exit 0
+      else host=0.0.0.0
+      fi
+    elif [ "$SCENARIO" = candidate-dual-stack-wildcard ]; then printf 'P|6379/tcp|0.0.0.0|16379\\nP|6379/tcp|::|16379\\n'; exit 0
     elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
     elif [ "$SERVER" = 2 ]; then host=127.0.0.1
     else host=0.0.0.0; fi
@@ -611,6 +620,12 @@ for (const server of [1, 2]) {
   });
 }
 
+test('prod1 rejects a rollback that adds an IPv6 wildcard binding', (t) => {
+  const { state, result } = runDeployment(t, 1, 'rollback-added-ipv6', { run: '152-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLBACK_FAILED');
+});
+
 test('prod2 rejects a wildcard candidate binding before mutation', (t) => {
   const { root, state, result } = runDeployment(t, 2, 'candidate-wildcard', { run: '126-1' });
   assert.notEqual(result.status, 0);
@@ -620,6 +635,13 @@ test('prod2 rejects a wildcard candidate binding before mutation', (t) => {
 
 test('prod2 accepts the exact Docker dual-stack expansion of a Compose wildcard before mutation', (t) => {
   const { root, state, result } = runDeployment(t, 2, 'dual-stack-wildcard', { run: '134-1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+});
+
+test('prod1 accepts the exact Docker dual-stack expansion after candidate apply', (t) => {
+  const { root, state, result } = runDeployment(t, 1, 'candidate-dual-stack-wildcard', { run: '151-1' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
   assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
