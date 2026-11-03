@@ -26,6 +26,7 @@ function runNative(t, {
   durableResult = 'SUCCESS',
   launchDisconnect = false,
   cleanupFailure = false,
+  resultWithoutFinished = false,
   run = '98765-2',
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'infra-native-deploy-'));
@@ -61,10 +62,11 @@ case "$*" in
   *nohup*deploy-prod.sh*rollout*)
     touch "$FIXTURE/launched"
     [ -z '${durableResult}' ] || printf 'DEPLOY_RESULT=%s\n' '${durableResult}' >"$FIXTURE/remote.result"
+    [ -z '${durableResult}' ] || [ '${resultWithoutFinished ? 'yes' : 'no'}' = yes ] || printf 'DEPLOY_FINISHED=1\n' >"$FIXTURE/remote.finished"
     [ '${launchDisconnect ? 'yes' : 'no'}' = no ] || exit 255
     ;;
   *state/result*)
-    [ ! -f "$FIXTURE/remote.result" ] || cat "$FIXTURE/remote.result"
+    [ ! -f "$FIXTURE/remote.result" ] || [ ! -f "$FIXTURE/remote.finished" ] || cat "$FIXTURE/remote.result"
     ;;
   *'chmod -R u+rwX'*'rm -rf --'*'test ! -e'*)
     [ '${cleanupFailure ? 'yes' : 'no'}' = no ] || exit 1
@@ -78,7 +80,7 @@ esac
   const result = spawnSync(bash, ['-c', command], {
     cwd: root,
     encoding: 'utf8',
-    timeout: 15_000,
+    timeout: 25_000,
     env: {
       ...process.env,
       FIXTURE: root,
@@ -92,6 +94,8 @@ esac
       PROD_SSH_PRIVATE_KEY: 'test-private-key',
       PROD_HOST_FINGERPRINT: trusted,
       PROD_ENV_FILE: 'PASSWORD=fixture-only',
+      DEPLOY_POLL_ATTEMPTS: '8',
+      DEPLOY_POLL_INTERVAL_SECONDS: '0',
     },
   });
   return { root, result };
@@ -167,6 +171,13 @@ test('failed deployment retains its protected stage for diagnosis', (t) => {
   const { root, result } = runNative(t, { durableResult: 'ROLLED_BACK' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /retained for diagnosis/);
+  assert.equal(existsSync(join(root, 'cleaned')), false);
+});
+
+test('native deployment never cleans up a result marker before the remote finished acknowledgement', (t) => {
+  const { root, result } = runNative(t, { resultWithoutFinished: true });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /without a verified durable result/);
   assert.equal(existsSync(join(root, 'cleaned')), false);
 });
 

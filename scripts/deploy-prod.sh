@@ -13,6 +13,24 @@ record_result() {
   mv "$temporary" "$state_dir/result"
 }
 
+record_finished() {
+  local temporary="$state_dir/finished.tmp.$$"
+  printf 'DEPLOY_FINISHED=1\n' >"$temporary"
+  mv "$temporary" "$state_dir/finished"
+}
+
+record_watchdog_ack() {
+  local temporary="$state_dir/watchdog-ack.tmp.$$"
+  printf 'WATCHDOG_ACK=1\n' >"$temporary"
+  mv "$temporary" "$state_dir/watchdog-ack"
+}
+
+record_commit_ready() {
+  local temporary="$state_dir/commit-ready.tmp.$$"
+  printf 'COMMIT_READY=1\n' >"$temporary"
+  mv "$temporary" "$state_dir/commit-ready"
+}
+
 container_has_healthcheck() {
   local container=$1 config_json
   config_json=$(docker inspect --format '{{json .Config}}' "$container") || return 1
@@ -156,12 +174,9 @@ rollback_ready() {
   same_runtime "$state_dir/previous-resources" "$state_dir/previous-ports"
 }
 
-promote_prod2_ops() {
-  local ops_parent="$root/incoming2/ops" ops_target="$root/incoming2/ops/prod2" ops_temporary="$root/incoming2/ops/.prod2-$revision-$$"
-  mkdir -p "$ops_parent"
-  cp -a "$inputs/ops/prod2" "$ops_temporary"
-  chmod -R go-rwx "$ops_temporary"
-  python3 - "$ops_temporary" "$ops_target" <<'PY'
+atomic_replace_path() {
+  local source=$1 target=$2
+  python3 - "$source" "$target" <<'PY'
 import ctypes, os, sys
 source, target = map(os.fsencode, sys.argv[1:])
 if os.path.lexists(target):
@@ -172,8 +187,43 @@ if os.path.lexists(target):
 else:
     os.rename(source, target)
 PY
-  chmod -R u+rwX "$ops_temporary" 2>/dev/null || true
-  rm -rf -- "$ops_temporary" || true
+  chmod -R u+rwX "$source" 2>/dev/null || true
+  rm -rf -- "$source" || true
+}
+
+promote_prod2_ops() {
+  local ops_parent="$root/incoming2/ops" ops_target="$root/incoming2/ops/prod2" ops_temporary="$root/incoming2/ops/.prod2-$revision-$$"
+  mkdir -p "$ops_parent"
+  cp -a "$inputs/ops/prod2" "$ops_temporary"
+  chmod -R go-rwx "$ops_temporary"
+  atomic_replace_path "$ops_temporary" "$ops_target"
+}
+
+restore_prod2_ops() {
+  [[ $server == 2 ]] || return 0
+  local ops_parent="$root/incoming2/ops" ops_target="$root/incoming2/ops/prod2" ops_temporary="$root/incoming2/ops/.prod2-rollback-$revision-$$"
+  mkdir -p "$ops_parent"
+  if [[ $(<"$state_dir/previous-ops-presence") == present ]]; then
+    cp -a "$state_dir/previous-prod2-ops" "$ops_temporary"
+    atomic_replace_path "$ops_temporary" "$ops_target"
+  elif [[ -e $ops_target || -L $ops_target ]]; then
+    python3 - "$ops_target" "$ops_temporary" <<'PY'
+import os, sys
+source, target = map(os.fsencode, sys.argv[1:])
+os.rename(source, target)
+PY
+    chmod -R u+rwX "$ops_temporary" 2>/dev/null || true
+    rm -rf -- "$ops_temporary"
+  fi
+}
+
+restore_last_deployed_marker() {
+  local target="$root/.last-deployed-prod${server}-sha"
+  if [[ $(<"$state_dir/previous-last-presence") == present ]]; then
+    cp "$state_dir/previous-last-sha" "$target"
+  else
+    rm -f -- "$target"
+  fi
 }
 
 load_state() {
@@ -188,14 +238,22 @@ load_state() {
   valid_service "$project"
   valid_path "$root"
   [[ -s $state_dir/previous-compose.yml && -s $state_dir/previous-env && -s $state_dir/previous-images.yml ]]
+  [[ $(<"$state_dir/previous-last-presence") == absent || -s $state_dir/previous-last-sha ]]
+  if [[ $server == 2 ]]; then
+    [[ $(<"$state_dir/previous-ops-presence") == absent || -e $state_dir/previous-prod2-ops || -L $state_dir/previous-prod2-ops ]]
+  fi
 }
 
 rollback() {
+  local status=0
   cp "$state_dir/previous-compose.yml" "$root/$compose"
   cp "$state_dir/previous-env" "$root/$env_file"
   chmod 600 "$root/$env_file"
-  if docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" up -d --wait --pull never &&
-     rollback_ready; then
+  docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" up -d --wait --pull never &&
+    rollback_ready || status=1
+  restore_prod2_ops || status=1
+  restore_last_deployed_marker || status=1
+  if ((status == 0)); then
     record_result ROLLED_BACK
     return 0
   fi
@@ -213,11 +271,18 @@ watchdog_main() {
   [[ $timeout =~ ^[1-9][0-9]{0,3}$ && $timeout -le 900 ]]
   exec 9>&- || true
 
-  while [[ ! -f $state_dir/result ]] && kill -0 "$parent_pid" 2>/dev/null && ((elapsed < timeout)); do
+  while [[ ! -f $state_dir/result && ! -f $state_dir/commit-ready ]] && kill -0 "$parent_pid" 2>/dev/null && ((elapsed < timeout)); do
     sleep 1
     ((elapsed += 1))
   done
-  [[ -f $state_dir/result ]] && exit 0
+  if [[ -f $state_dir/result ]]; then
+    record_watchdog_ack
+    exit 0
+  fi
+  if [[ -f $state_dir/commit-ready ]] && kill -0 "$parent_pid" 2>/dev/null; then
+    record_watchdog_ack
+    exit 0
+  fi
   if kill -0 "$parent_pid" 2>/dev/null; then
     kill -TERM "$parent_pid" 2>/dev/null || true
     for _ in $(seq 1 15); do
@@ -234,8 +299,11 @@ watchdog_main() {
   [[ $lock_wait =~ ^[1-9][0-9]?$ && $lock_wait -le 60 ]] || { record_result ROLLBACK_FAILED; exit 2; }
   flock -w "$lock_wait" 8 || { record_result ROLLBACK_FAILED; exit 2; }
   [[ -f $state_dir/result ]] && exit 0
-  rollback || exit 2
-  exit 1
+  if rollback; then status=1; else status=2; fi
+  exec 8>&-
+  record_watchdog_ack
+  record_finished
+  exit "$status"
 }
 
 rollout_main() {
@@ -259,6 +327,8 @@ rollout_main() {
   record_preflight_failure() {
     trap - ERR HUP INT TERM
     [[ -f $state_dir/result ]] || record_result PREFLIGHT_FAILED
+    exec 9>&- || true
+    record_finished
     exit 1
   }
   trap 'record_preflight_failure' ERR HUP INT TERM
@@ -317,13 +387,17 @@ rollout_main() {
   render_compose "$inputs/$compose" "$inputs/$env_file" "$state_dir/candidate-render"
   cmp -s "$state_dir/current-render/images.map" "$state_dir/candidate-render/images.map"
   for service in $services; do
+    cmp -s "$state_dir/previous-resources/$service" "$state_dir/current-render/resources/$service"
+    cmp -s "$state_dir/previous-ports/$service" "$state_dir/current-render/ports/$service"
     cmp -s "$state_dir/previous-resources/$service" "$state_dir/candidate-render/resources/$service"
     if [[ $server == 2 ]]; then
       awk -F '|' '$1 == "P" && $3 != "127.0.0.1" { bad=1 } END { exit (bad ? 1 : 0) }' "$state_dir/candidate-render/ports/$service"
     fi
   done
   while IFS='|' read -r service previous_mode; do
+    current_mode=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/current-render/healthchecks.map")
     candidate_mode=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/candidate-render/healthchecks.map")
+    [[ $current_mode == "$previous_mode" ]]
     [[ $candidate_mode == healthy || $candidate_mode == running ]]
     [[ $previous_mode != healthy || $candidate_mode == healthy ]]
   done <"$state_dir/previous-readiness"
@@ -333,6 +407,20 @@ rollout_main() {
   printf '%s\n' "$project" >"$state_dir/project"
   printf '%s\n' "$root" >"$state_dir/root"
   chmod -R go-rwx "$state_dir"
+  if [[ $server == 2 ]]; then
+    if [[ -e $root/incoming2/ops/prod2 || -L $root/incoming2/ops/prod2 ]]; then
+      cp -a "$root/incoming2/ops/prod2" "$state_dir/previous-prod2-ops"
+      printf 'present\n' >"$state_dir/previous-ops-presence"
+    else
+      printf 'absent\n' >"$state_dir/previous-ops-presence"
+    fi
+  fi
+  if [[ -e $root/.last-deployed-prod${server}-sha ]]; then
+    cp -a "$root/.last-deployed-prod${server}-sha" "$state_dir/previous-last-sha"
+    printf 'present\n' >"$state_dir/previous-last-presence"
+  else
+    printf 'absent\n' >"$state_dir/previous-last-presence"
+  fi
 
   nohup env DEPLOY_WATCHDOG_SECONDS="${DEPLOY_WATCHDOG_SECONDS:-600}" DEPLOY_LOCK_WAIT_SECONDS="$lock_wait" bash "$inputs/deploy-prod.sh" watchdog "$stage" "$$" </dev/null >/dev/null 2>&1 &
   watchdog_pid=$!
@@ -344,6 +432,8 @@ rollout_main() {
     rollback
     local status=$?
     wait "$watchdog_pid" 2>/dev/null || true
+    exec 9>&- || true
+    record_finished
     ((status == 0)) && exit 1
     exit 2
   }
@@ -356,10 +446,14 @@ rollout_main() {
   candidate_ready
   if [[ $server == 2 ]]; then promote_prod2_ops; fi
 
-  trap - ERR HUP INT TERM
   printf '%s\n' "$revision" >"$root/.last-deployed-prod${server}-sha"
-  record_result SUCCESS
+  record_commit_ready
   wait "$watchdog_pid" 2>/dev/null || true
+  [[ $(<"$state_dir/watchdog-ack") == WATCHDOG_ACK=1 ]]
+  exec 9>&-
+  record_result SUCCESS
+  record_finished
+  trap - ERR HUP INT TERM
   echo "Production deployment passed for server $server"
 }
 

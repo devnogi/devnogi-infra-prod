@@ -35,6 +35,8 @@ function setupFixture(t, server, scenario, run = '123-1') {
   if (server === 2) {
     mkdirSync(join(inputs, 'ops', 'prod2'), { recursive: true });
     writeFileSync(join(inputs, 'ops', 'prod2', 'install-logging.sh'), `#!/bin/sh\n# ${run}\n`);
+    mkdirSync(join(root, 'incoming2', 'ops', 'prod2'), { recursive: true });
+    writeFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), '#!/bin/sh\n# previous-ops\n');
   }
   writeFileSync(join(root, `docker-compose-prod${server}.yml`), 'old-compose\n');
   writeFileSync(join(root, `.env.infra${server}`), 'old-env\n');
@@ -42,6 +44,18 @@ function setupFixture(t, server, scenario, run = '123-1') {
   writeFileSync(join(inputs, `.env.infra${server}`), `candidate-env-${run}\n`);
   writeFileSync(join(inputs, 'deploy-prod.sh'), readFileSync(script));
   executable(join(bin, 'flock'), '#!/bin/sh\n[ "$LOCK_HELD" != 1 ] || exit 1\nif [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then sleep 4; fi\n');
+  executable(join(bin, 'mv'), `#!/bin/sh
+set -eu
+destination=
+for argument in "$@"; do destination=$argument; done
+name=\${destination##*/}
+if [ "$SCENARIO" = final-marker-failure ] && [ "$name" = result ] && [ ! -f "$FIXTURE/marker-failed" ] && grep -q '${run}' "$FIXTURE/incoming2/ops/prod2/install-logging.sh" 2>/dev/null; then
+  touch "$FIXTURE/marker-failed"
+  exit 1
+fi
+/usr/bin/mv "$@"
+case "$name" in commit-ready|watchdog-ack|result|finished) printf '%s\\n' "$name" >>"$FIXTURE/marker-order" ;; esac
+`);
   executable(join(bin, 'python3'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
@@ -93,16 +107,25 @@ case "$args" in
     cache_image=image/cache:1
     app_source=/srv/app
     app_health='"test":["CMD","true"]'
-    if [ "$SERVER" = 2 ]; then app_host=127.0.0.1; cache_host=127.0.0.1; else app_host=0.0.0.0; cache_host=0.0.0.0; fi
+    app_host=0.0.0.0
+    cache_host=0.0.0.0
+    network_name=infra_devnogi-network
     if [ "$candidate" = 1 ]; then
+      if [ "$SERVER" = 2 ]; then app_host=127.0.0.1; cache_host=127.0.0.1; fi
       [ "$SCENARIO" != image-swap ] || { app_image=image/cache:1; cache_image=image/app:1; }
       [ "$SCENARIO" != resource-mismatch ] || app_source=/srv/other
       [ "$SCENARIO" != healthy-to-no-health ] || app_health=
       [ "$SCENARIO" != healthy-to-disabled-health ] || app_health='"disable":true'
       [ "$SCENARIO" != candidate-wildcard ] || app_host=0.0.0.0
+    else
+      [ "$SCENARIO" != prior-no-health-success ] || app_health=
+      [ "$SCENARIO" != live-drift-mount ] || app_source=/srv/other
+      [ "$SCENARIO" != live-drift-network ] || network_name=infra_other-network
+      [ "$SCENARIO" != live-drift-port ] || app_host=127.0.0.1
+      [ "$SCENARIO" != live-drift-readiness ] || app_health=
     fi
     if [ -n "$app_health" ]; then health=",\\\"healthcheck\\\":{\${app_health}}"; else health=; fi
-    printf '{"name":"infra","services":{"app":{"image":"%s","volumes":[{"type":"bind","source":"%s","target":"/data"}],"networks":{"default":{}},"ports":[{"target":8080,"published":"18080","protocol":"tcp","host_ip":"%s"}]%s},"cache":{"image":"%s","volumes":[{"type":"volume","source":"cache-data","target":"/cache"}],"networks":{"default":{}},"ports":[{"target":6379,"published":"16379","protocol":"tcp","host_ip":"%s"}],"healthcheck":{"test":["CMD","true"]}}},"volumes":{"cache-data":{"name":"infra_cache-data"}},"networks":{"default":{"name":"infra_devnogi-network"}}}\\n' "$app_image" "$app_source" "$app_host" "$health" "$cache_image" "$cache_host"
+    printf '{"name":"infra","services":{"app":{"image":"%s","volumes":[{"type":"bind","source":"%s","target":"/data"}],"networks":{"default":{}},"ports":[{"target":8080,"published":"18080","protocol":"tcp","host_ip":"%s"}]%s},"cache":{"image":"%s","volumes":[{"type":"volume","source":"cache-data","target":"/cache"}],"networks":{"default":{}},"ports":[{"target":6379,"published":"16379","protocol":"tcp","host_ip":"%s"}],"healthcheck":{"test":["CMD","true"]}}},"volumes":{"cache-data":{"name":"infra_cache-data"}},"networks":{"default":{"name":"%s"}}}\\n' "$app_image" "$app_source" "$app_host" "$health" "$cache_image" "$cache_host" "$network_name"
     ;;
   *' ps --all -q app') case "$args" in *'--project-name infra'*'--project-directory '*) echo container-app ;; *) exit 92 ;; esac ;;
   *' ps --all -q cache') case "$args" in *'--project-name infra'*'--project-directory '*) echo container-cache ;; *) exit 92 ;; esac ;;
@@ -238,6 +261,8 @@ for (const server of [1, 2]) {
     assert.match(readFileSync(join(state, 'previous-readiness'), 'utf8'), /app\|running/);
     assert.equal(readFileSync(join(root, `.last-deployed-prod${server}-sha`), 'utf8').trim(), revision);
     assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+    assert.equal(readFileSync(join(state, 'finished'), 'utf8').trim(), 'DEPLOY_FINISHED=1');
+    assert.deepEqual(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).slice(-4), ['commit-ready', 'watchdog-ack', 'result', 'finished']);
     assert.equal(readFileSync(join(root, `docker-compose-prod${server}.yml`), 'utf8'), 'candidate-123-1\n');
     assert.equal(readFileSync(join(root, `.env.infra${server}`), 'utf8'), 'candidate-env-123-1\n');
     const dockerArgs = readFileSync(join(root, 'docker.args'), 'utf8');
@@ -329,6 +354,24 @@ test('prod2 rejects a wildcard candidate binding before mutation', (t) => {
   assert.notEqual(result.status, 0);
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
   assert.equal(existsSync(join(root, 'started')), false);
+});
+
+for (const scenario of ['live-drift-mount', 'live-drift-network', 'live-drift-port', 'live-drift-readiness']) {
+  test(`live ${scenario.replace('live-drift-', '')} drift aborts before mutation`, (t) => {
+    const { root, state, result } = runDeployment(t, 2, scenario, { run: '127-1' });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+    assert.equal(existsSync(join(root, 'started')), false);
+    assert.equal(existsSync(join(root, 'up-count')), false);
+  });
+}
+
+test('prod2 restores the previous stable ops package when the final result marker fails', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'final-marker-failure', { run: '128-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLED_BACK');
+  assert.match(readFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), 'utf8'), /previous-ops/);
+  assert.equal(existsSync(join(root, '.last-deployed-prod2-sha')), false);
 });
 
 test('detached watchdog rolls back after the rollout parent is SIGKILLed', (t) => {

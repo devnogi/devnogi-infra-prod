@@ -30,6 +30,7 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.doesNotMatch(runner, /StrictHostKeyChecking=(?:no|accept-new)/);
   assert.match(runner, /\.deploy-staging\/prod\$\{server\}-\$\{revision\}-\$\{run\}/);
   assert.match(runner, /DEPLOY_RESULT=SUCCESS/);
+  assert.match(runner, /test -f '\$state\/finished'/);
   assert.match(remote, /watchdog_main/);
   assert.match(remote, /record_result ROLLED_BACK/);
   assert.match(remote, /cp "\$state_dir\/previous-compose\.yml" "\$root\/\$compose"/);
@@ -40,6 +41,12 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.match(remote, /renameat2/);
   assert.match(remote, /candidate-render\/ports/);
   assert.match(remote, /previous-ports/);
+  const commitReady = remote.indexOf('record_commit_ready', remote.indexOf('printf \'%s\\n\' "$revision"'));
+  const waitForWatchdog = remote.indexOf('wait "$watchdog_pid"', commitReady);
+  const releaseLock = remote.indexOf('exec 9>&-', waitForWatchdog);
+  const successResult = remote.indexOf('record_result SUCCESS', releaseLock);
+  const finished = remote.indexOf('record_finished', successResult);
+  assert.ok(commitReady < waitForWatchdog && waitForWatchdog < releaseLock && releaseLock < successResult && successResult < finished);
   assert.match(remote, /--pull never/);
   assert.match(remote, /rollback_ready/);
   assert.match(remote, /candidate_ready/);

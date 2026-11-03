@@ -79,7 +79,7 @@ poll_interval=${DEPLOY_POLL_INTERVAL_SECONDS:-5}
 [[ $poll_attempts =~ ^[1-9][0-9]{0,2}$ && $poll_attempts -le 300 ]]
 [[ $poll_interval =~ ^[0-9]$ ]]
 for _ in $(seq 1 "$poll_attempts"); do
-  result=$(ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "test ! -f '$state/result' || cat '$state/result'" 2>/dev/null) || true
+  result=$(ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" "test ! -f '$state/result' || { test -f '$state/finished' && cat '$state/result'; }" 2>/dev/null) || true
   [[ -z $result ]] || break
   sleep "$poll_interval"
 done
