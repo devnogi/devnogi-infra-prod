@@ -124,10 +124,13 @@ raise SystemExit(0 if isinstance(value, dict) and value.get("com.docker.volume.a
     fi
     if ! docker exec "$container" sh -c '
 target=$1
-[ -d "$target" ] || exit 1
-command -v find >/dev/null 2>&1 || exit 1
-first=$(find "$target" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) || exit 1
-[ -z "$first" ]
+[ -d "$target" ] && [ -r "$target" ] && [ -x "$target" ] || exit 1
+set -- "$target"/.[!.]* "$target"/..?* "$target"/*
+for entry do
+  if [ -e "$entry" ] || [ -L "$entry" ]; then
+    exit 1
+  fi
+done
 ' sh "$target" >/dev/null; then
       rm -f -- "$filtered"
       return 1
