@@ -15,6 +15,10 @@ for (const server of [1, 2]) {
     t.after(() => rmSync(root, { recursive: true, force: true }));
     mkdirSync(join(root, 'bin'));
     mkdirSync(join(root, `incoming${server}`));
+    if (server === 2) {
+      mkdirSync(join(root, 'incoming2', 'ops', 'prod2'), { recursive: true });
+      writeFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), '#!/bin/sh\n');
+    }
     writeFileSync(join(root, `docker-compose-prod${server}.yml`), 'old-compose');
     writeFileSync(join(root, `.env.infra${server}`), 'old-env');
     writeFileSync(join(root, `incoming${server}`, `docker-compose-prod${server}.yml`), 'new-compose');

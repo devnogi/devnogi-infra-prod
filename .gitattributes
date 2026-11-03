@@ -1,1 +1,2 @@
 docker/local/mysql/*.sh text eol=lf
+ops/prod2/** text eol=lf

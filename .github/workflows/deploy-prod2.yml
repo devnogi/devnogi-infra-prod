@@ -16,7 +16,7 @@ jobs:
   deploy:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     environment: production
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
           HOST_FINGERPRINT: ${{ secrets.PROD2_HOST_FINGERPRINT }}
         run: test -n "$HOST_FINGERPRINT"
 
-      - name: Copy docker-compose to Server 2
+      - name: Copy docker-compose and operations package to Server 2
         uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
         with:
           host: ${{ secrets.PROD2_HOST }}
@@ -34,7 +34,7 @@ jobs:
           key: ${{ secrets.PROD2_PEM_KEY }}
           fingerprint: ${{ secrets.PROD2_HOST_FINGERPRINT }}
           port: ${{ secrets.PROD2_SSH_PORT }}
-          source: "docker-compose-prod2.yml"
+          source: "docker-compose-prod2.yml,ops/prod2"
           target: "/opt/infra/incoming2/"
 
       - name: Create .env and Execute Docker
@@ -52,6 +52,7 @@ jobs:
             cd /opt/infra
             test -s docker-compose-prod2.yml
             test -s .env.infra2
+            test -s incoming2/ops/prod2/install-logging.sh
             cp docker-compose-prod2.yml .previous-compose-prod2.yml
             cp .env.infra2 .previous-env-prod2
             
