@@ -31,6 +31,12 @@ record_commit_ready() {
   mv "$temporary" "$state_dir/commit-ready"
 }
 
+record_watchdog_marker() {
+  local name=$1 temporary="$state_dir/$1.tmp.$$"
+  printf '%s=1\n' "${name^^}" >"$temporary"
+  mv "$temporary" "$state_dir/$name"
+}
+
 container_has_healthcheck() {
   local container=$1 config_json
   config_json=$(docker inspect --format '{{json .Config}}' "$container") || return 1
@@ -289,11 +295,13 @@ watchdog_main() {
     kill -KILL "$parent_pid" 2>/dev/null || true
   fi
 
+  [[ -f $state_dir/result ]] || record_watchdog_marker watchdog-takeover
   load_state || { record_result ROLLBACK_FAILED; record_finished; exit 2; }
   exec 8>"$root/.deploy-prod${server}.lock"
   lock_wait=${DEPLOY_LOCK_WAIT_SECONDS:-60}
   [[ $lock_wait =~ ^[1-9][0-9]?$ && $lock_wait -le 60 ]] || { record_result ROLLBACK_FAILED; record_finished; exit 2; }
   flock -w "$lock_wait" 8 || { record_result ROLLBACK_FAILED; record_finished; exit 2; }
+  record_watchdog_marker watchdog-lock-acquired
   if [[ -f $state_dir/result ]]; then
     result_value=$(<"$state_dir/result")
     case $result_value in
@@ -413,7 +421,8 @@ rollout_main() {
   printf '%s\n' "$revision" >"$state_dir/revision"
   printf '%s\n' "$project" >"$state_dir/project"
   printf '%s\n' "$root" >"$state_dir/root"
-  printf '%s\n' "$$" >"$state_dir/rollout-pid"
+  rollout_pid=$BASHPID
+  printf '%s\n' "$rollout_pid" >"$state_dir/rollout-pid"
   chmod -R go-rwx "$state_dir"
   if [[ $server == 2 ]]; then
     if [[ -e $root/incoming2/ops/prod2 || -L $root/incoming2/ops/prod2 ]]; then
@@ -430,7 +439,7 @@ rollout_main() {
     printf 'absent\n' >"$state_dir/previous-last-presence"
   fi
 
-  nohup env DEPLOY_WATCHDOG_SECONDS="${DEPLOY_WATCHDOG_SECONDS:-600}" DEPLOY_LOCK_WAIT_SECONDS="$lock_wait" bash "$inputs/deploy-prod.sh" watchdog "$stage" "$$" </dev/null >/dev/null 2>&1 &
+  nohup env DEPLOY_WATCHDOG_SECONDS="${DEPLOY_WATCHDOG_SECONDS:-600}" DEPLOY_LOCK_WAIT_SECONDS="$lock_wait" bash "$inputs/deploy-prod.sh" watchdog "$stage" "$rollout_pid" </dev/null >/dev/null 2>&1 &
   watchdog_pid=$!
 
   recover() {
@@ -472,9 +481,8 @@ rollout_main() {
   exec 9>&-
   lock_held=0
   record_result SUCCESS
-  wait "$watchdog_pid"
-  [[ $(<"$state_dir/finished") == DEPLOY_FINISHED=1 ]]
   trap - ERR HUP INT TERM
+  wait "$watchdog_pid"
   echo "Production deployment passed for server $server"
 }
 

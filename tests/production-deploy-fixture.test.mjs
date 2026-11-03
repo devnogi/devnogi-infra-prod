@@ -43,19 +43,30 @@ function setupFixture(t, server, scenario, run = '123-1') {
   writeFileSync(join(inputs, `docker-compose-prod${server}.yml`), `candidate-${run}\n`);
   writeFileSync(join(inputs, `.env.infra${server}`), `candidate-env-${run}\n`);
   writeFileSync(join(inputs, 'deploy-prod.sh'), readFileSync(script));
-  executable(join(bin, 'flock'), '#!/bin/sh\n[ "$LOCK_HELD" != 1 ] || exit 1\nif [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then sleep 4; fi\n');
+  executable(join(bin, 'flock'), '#!/bin/sh\n[ "$LOCK_HELD" != 1 ] || exit 1\nif [ "$SCENARIO" = slow-success ] && [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then sleep 4; fi\nif [ "$SCENARIO" = term-after-success ] && [ -f "$FIXTURE/started" ] && [ ! -f "$FIXTURE/rollback-complete" ]; then sleep 2; fi\n');
   executable(join(bin, 'mv'), `#!/bin/sh
 set -eu
 destination=
 for argument in "$@"; do destination=$argument; done
 name=\${destination##*/}
+if [ "$SCENARIO" = term-before-success ] && [ "$name" = result ] && [ ! -f "$FIXTURE/term-before-triggered" ] && grep -q '${run}' "$FIXTURE/incoming2/ops/prod2/install-logging.sh" 2>/dev/null; then
+  touch "$FIXTURE/term-before-triggered"
+  state_dir=\${destination%/*}
+  kill -TERM "$(cat "$state_dir/rollout-pid")"
+  sleep 0.1
+  exit 1
+fi
 if [ "$SCENARIO" = final-marker-failure ] && [ "$name" = result ] && [ ! -f "$FIXTURE/marker-failed" ] && grep -q '${run}' "$FIXTURE/incoming2/ops/prod2/install-logging.sh" 2>/dev/null; then
   touch "$FIXTURE/marker-failed"
   exit 1
 fi
 /usr/bin/mv "$@"
-case "$name" in commit-ready|watchdog-ack|result|finished) printf '%s\\n' "$name" >>"$FIXTURE/marker-order" ;; esac
+case "$name" in commit-ready|watchdog-ack|watchdog-takeover|watchdog-lock-acquired|result|finished) printf '%s\\n' "$name" >>"$FIXTURE/marker-order" ;; esac
 if [ "$SCENARIO" = kill-after-ack ] && [ "$name" = watchdog-ack ]; then
+  state_dir=\${destination%/*}
+  kill -STOP "$(cat "$state_dir/rollout-pid")"
+fi
+if [ "$SCENARIO" = term-after-finished ] && [ "$name" = finished ]; then
   state_dir=\${destination%/*}
   kill -STOP "$(cat "$state_dir/rollout-pid")"
 fi
@@ -236,6 +247,8 @@ kill -KILL "$rollout_pid"
 wait "$rollout_pid" 2>/dev/null || true
 for _ in $(seq 1 300); do [ -f "$STAGE/state/result" ] && break; sleep 0.05; done
 test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=ROLLED_BACK
+for _ in $(seq 1 200); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
+test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
 `;
   const result = spawnSync(bash, ['-c', command], {
     encoding: 'utf8',
@@ -266,15 +279,21 @@ export FIXTURE DEPLOY_ROOT STAGE SCRIPT PATH="$FIXTURE/bin:$PATH"
 "$SCRIPT" rollout 2 "$REVISION" "$STAGE" & rollout_pid=$!
 for _ in $(seq 1 300); do [ -f "$STAGE/state/watchdog-ack" ] && break; sleep 0.05; done
 [ -f "$STAGE/state/watchdog-ack" ]
+test "$rollout_pid" = "$(cat "$STAGE/state/rollout-pid")"
 kill -KILL "$rollout_pid"
 wait "$rollout_pid" 2>/dev/null || true
-for _ in $(seq 1 400); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
+printf 'PARENT_KILLED=1\n' >"$STAGE/state/test-parent-killed"
+for _ in $(seq 1 200); do [ -f "$STAGE/state/watchdog-takeover" ] && break; sleep 0.05; done
+test -f "$STAGE/state/watchdog-takeover"
+for _ in $(seq 1 200); do [ -f "$STAGE/state/watchdog-lock-acquired" ] && break; sleep 0.05; done
+test -f "$STAGE/state/watchdog-lock-acquired"
+for _ in $(seq 1 200); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
 test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=ROLLED_BACK
 test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
 `;
   const result = spawnSync(bash, ['-c', command], {
     encoding: 'utf8',
-    timeout: 30_000,
+    timeout: 20_000,
     env: {
       ...process.env,
       PATH: `${fixture.bin};${process.env.PATH}`,
@@ -293,6 +312,63 @@ test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
   return { ...fixture, result };
 }
 
+function runTermWindow(t, scenario, run) {
+  const fixture = setupFixture(t, 2, scenario, run);
+  let synchronization;
+  if (scenario === 'term-before-success') {
+    synchronization = `
+for _ in $(seq 1 300); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
+test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=ROLLED_BACK
+test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
+`;
+  } else if (scenario === 'term-after-success') {
+    synchronization = `
+for _ in $(seq 1 300); do [ -f "$STAGE/state/result" ] && break; sleep 0.05; done
+test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=SUCCESS
+test ! -e "$STAGE/state/finished"
+kill -TERM "$rollout_pid"
+wait "$rollout_pid" 2>/dev/null || true
+for _ in $(seq 1 300); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
+test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=SUCCESS
+test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
+`;
+  } else {
+    synchronization = `
+for _ in $(seq 1 300); do [ -f "$STAGE/state/finished" ] && break; sleep 0.05; done
+test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=SUCCESS
+kill -TERM "$rollout_pid"
+kill -CONT "$rollout_pid" 2>/dev/null || true
+wait "$rollout_pid" 2>/dev/null || true
+test "$(cat "$STAGE/state/result")" = DEPLOY_RESULT=SUCCESS
+`;
+  }
+  const command = `
+if command -v cygpath >/dev/null; then FIXTURE=$(cygpath -u "$FIXTURE"); DEPLOY_ROOT=$(cygpath -u "$DEPLOY_ROOT"); STAGE=$(cygpath -u "$STAGE"); SCRIPT=$(cygpath -u "$SCRIPT"); fi
+export FIXTURE DEPLOY_ROOT STAGE SCRIPT PATH="$FIXTURE/bin:$PATH"
+"$SCRIPT" rollout 2 "$REVISION" "$STAGE" & rollout_pid=$!
+${synchronization}
+`;
+  const result = spawnSync(bash, ['-c', command], {
+    encoding: 'utf8',
+    timeout: 20_000,
+    env: {
+      ...process.env,
+      PATH: `${fixture.bin};${process.env.PATH}`,
+      FIXTURE: fixture.root,
+      DEPLOY_ROOT: fixture.root,
+      STAGE: fixture.stage,
+      SCRIPT: script,
+      REVISION: revision,
+      SERVER: '2',
+      SCENARIO: scenario,
+      LOCK_HELD: '0',
+      DEPLOY_WATCHDOG_SECONDS: '10',
+      DEPLOY_LOCK_WAIT_SECONDS: '10',
+    },
+  });
+  return { ...fixture, result };
+}
+
 for (const server of [1, 2]) {
   test(`server ${server} bootstraps from a running container without a healthcheck`, (t) => {
     const { root, state, result } = runDeployment(t, server, 'prior-no-health-success');
@@ -301,7 +377,7 @@ for (const server of [1, 2]) {
     assert.equal(readFileSync(join(root, `.last-deployed-prod${server}-sha`), 'utf8').trim(), revision);
     assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
     assert.equal(readFileSync(join(state, 'finished'), 'utf8').trim(), 'DEPLOY_FINISHED=1');
-    assert.deepEqual(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).slice(-4), ['commit-ready', 'watchdog-ack', 'result', 'finished']);
+    assert.deepEqual(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).slice(-5), ['commit-ready', 'watchdog-ack', 'result', 'watchdog-lock-acquired', 'finished']);
     assert.equal(readFileSync(join(root, `docker-compose-prod${server}.yml`), 'utf8'), 'candidate-123-1\n');
     assert.equal(readFileSync(join(root, `.env.infra${server}`), 'utf8'), 'candidate-env-123-1\n');
     const dockerArgs = readFileSync(join(root, 'docker.args'), 'utf8');
@@ -423,11 +499,51 @@ test('detached watchdog rolls back after the rollout parent is SIGKILLed', (t) =
 
 test('watchdog rolls back exact prior state when the parent dies immediately after ACK', (t) => {
   const { root, state, result } = runKilledAfterAck(t);
-  assert.equal(result.status, 0, result.stderr);
+  const evidence = [
+    result.stderr,
+    existsSync(join(root, 'marker-order')) ? readFileSync(join(root, 'marker-order'), 'utf8') : 'no marker-order',
+    ...['watchdog-ack', 'test-parent-killed', 'watchdog-takeover', 'watchdog-lock-acquired', 'result', 'finished'].map((name) => `${name}=${existsSync(join(state, name))}`),
+  ].join('\n');
+  assert.equal(result.status, 0, evidence);
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLED_BACK');
   assert.equal(readFileSync(join(state, 'finished'), 'utf8').trim(), 'DEPLOY_FINISHED=1');
+  assert.equal(readFileSync(join(state, 'test-parent-killed'), 'utf8').trim(), 'PARENT_KILLED=1');
+  assert.equal(existsSync(join(state, 'watchdog-takeover')), true);
+  assert.equal(existsSync(join(state, 'watchdog-lock-acquired')), true);
   assert.equal(readFileSync(join(root, 'docker-compose-prod2.yml'), 'utf8'), 'old-compose\n');
   assert.equal(readFileSync(join(root, '.env.infra2'), 'utf8'), 'old-env\n');
   assert.match(readFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), 'utf8'), /previous-ops/);
   assert.equal(existsSync(join(root, '.last-deployed-prod2-sha')), false);
+  assert.deepEqual(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).slice(-6), [
+    'commit-ready',
+    'watchdog-ack',
+    'watchdog-takeover',
+    'watchdog-lock-acquired',
+    'result',
+    'finished',
+  ]);
 });
+
+test('TERM immediately before SUCCESS rolls back exactly once', (t) => {
+  const { root, state, result } = runTermWindow(t, 'term-before-success', '130-1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLED_BACK');
+  assert.equal(readFileSync(join(state, 'finished'), 'utf8').trim(), 'DEPLOY_FINISHED=1');
+  assert.equal(readFileSync(join(root, `docker-compose-prod2.yml`), 'utf8'), 'old-compose\n');
+  assert.match(readFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), 'utf8'), /previous-ops/);
+  assert.equal(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).filter((marker) => marker === 'result').length, 1);
+});
+
+for (const [scenario, run] of [['term-after-success', '131-1'], ['term-after-finished', '132-1']]) {
+  test(`${scenario} preserves SUCCESS without rollback`, (t) => {
+    const { root, state, result } = runTermWindow(t, scenario, run);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+    assert.equal(readFileSync(join(state, 'finished'), 'utf8').trim(), 'DEPLOY_FINISHED=1');
+    assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+    assert.equal(existsSync(join(root, 'rollback-complete')), false);
+    assert.equal(readFileSync(join(root, 'docker-compose-prod2.yml'), 'utf8'), `candidate-${run}\n`);
+    assert.match(readFileSync(join(root, 'incoming2', 'ops', 'prod2', 'install-logging.sh'), 'utf8'), new RegExp(run));
+    assert.equal(readFileSync(join(root, 'marker-order'), 'utf8').trim().split(/\r?\n/).filter((marker) => marker === 'result').length, 1);
+  });
+}
