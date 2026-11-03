@@ -60,6 +60,43 @@ inspect_ports() {
     sed '/^$/d' | sort
 }
 
+current_ports_reproduce_runtime() {
+  local actual=$1 rendered=$2
+  cmp -s "$actual" "$rendered" && return 0
+  awk -F '|' '
+    NR == FNR {
+      expected[$0]++
+      if ($1 == "P" && $3 == "0.0.0.0") {
+        wildcard_v6[$1 FS $2 FS "::" FS $4]++
+      }
+      next
+    }
+    { observed[$0]++ }
+    END {
+      for (line in expected) {
+        if (observed[line] != expected[line]) exit 1
+      }
+      for (line in observed) {
+        if (line in expected) {
+          if (observed[line] != expected[line]) exit 1
+        } else if (!(line in wildcard_v6) || observed[line] != wildcard_v6[line]) {
+          exit 1
+        }
+      }
+    }
+  ' "$rendered" "$actual"
+}
+
+image_health_mode() {
+  local image_id=$1 healthcheck_json
+  healthcheck_json=$(docker image inspect --format '{{json .Config.Healthcheck}}' "$image_id") || return 1
+  if [[ $healthcheck_json != null && $healthcheck_json != '<nil>' && $healthcheck_json != '{}' ]]; then
+    printf 'healthy\n'
+  else
+    printf 'running\n'
+  fi
+}
+
 render_compose() {
   local compose_file=$1 environment_file=$2 output_dir=$3 rendered
   rendered="$output_dir/rendered.json"
@@ -81,8 +118,13 @@ for name in sorted(services):
     if not isinstance(image, str) or not image:
         raise SystemExit("missing service image")
     images.append(f"{name}|{image}")
-    healthcheck = service.get("healthcheck")
-    healthchecks.append(f"{name}|{'healthy' if isinstance(healthcheck, dict) and not healthcheck.get('disable', False) else 'running'}")
+    if "healthcheck" not in service:
+        healthcheck_mode = "absent"
+    elif isinstance(service.get("healthcheck"), dict) and service["healthcheck"].get("disable", False):
+        healthcheck_mode = "disabled"
+    else:
+        healthcheck_mode = "configured"
+    healthchecks.append(f"{name}|{healthcheck_mode}")
     resources = []
     ports = []
     for mount in service.get("volumes", []):
@@ -364,6 +406,7 @@ rollout_main() {
   mkdir "$state_dir/previous-resources" "$state_dir/previous-ports" "$state_dir/current-resources" "$state_dir/current-ports" "$state_dir/current-render" "$state_dir/candidate-render"
   : >"$state_dir/previous-readiness"
   : >"$state_dir/previous-image-ids.map"
+  : >"$state_dir/previous-image-health.map"
   printf 'services:\n' >"$state_dir/previous-images.yml"
 
   for service in $services; do
@@ -393,6 +436,8 @@ rollout_main() {
     [[ $# -eq 1 ]]
     printf '%s\n' "$1" | grep -Eq '@sha256:[0-9a-f]{64}$'
     printf '%s|%s\n' "$service" "$image_id" >>"$state_dir/previous-image-ids.map"
+    image_readiness=$(image_health_mode "$image_id")
+    printf '%s|%s\n' "$service" "$image_readiness" >>"$state_dir/previous-image-health.map"
     printf '  %s:\n    image: "%s"\n' "$service" "$1" >>"$state_dir/previous-images.yml"
     inspect_resources "$container" >"$state_dir/previous-resources/$service"
     inspect_ports "$container" >"$state_dir/previous-ports/$service"
@@ -403,17 +448,30 @@ rollout_main() {
   cmp -s "$state_dir/current-render/images.map" "$state_dir/candidate-render/images.map"
   for service in $services; do
     cmp -s "$state_dir/previous-resources/$service" "$state_dir/current-render/resources/$service"
-    cmp -s "$state_dir/previous-ports/$service" "$state_dir/current-render/ports/$service"
+    current_ports_reproduce_runtime "$state_dir/previous-ports/$service" "$state_dir/current-render/ports/$service"
     cmp -s "$state_dir/previous-resources/$service" "$state_dir/candidate-render/resources/$service"
     if [[ $server == 2 ]]; then
       awk -F '|' '$1 == "P" && $3 != "127.0.0.1" { bad=1 } END { exit (bad ? 1 : 0) }' "$state_dir/candidate-render/ports/$service"
     fi
   done
   while IFS='|' read -r service previous_mode; do
-    current_mode=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/current-render/healthchecks.map")
-    candidate_mode=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/candidate-render/healthchecks.map")
+    current_healthcheck=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/current-render/healthchecks.map")
+    candidate_healthcheck=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/candidate-render/healthchecks.map")
+    image_mode=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/previous-image-health.map")
+    case $current_healthcheck in
+      configured) current_mode=healthy ;;
+      disabled) current_mode=running ;;
+      absent) current_mode=$image_mode ;;
+      *) exit 1 ;;
+    esac
+    case $candidate_healthcheck in
+      configured) candidate_mode=healthy ;;
+      disabled) candidate_mode=running ;;
+      absent) candidate_mode=$image_mode ;;
+      *) exit 1 ;;
+    esac
     [[ $current_mode == "$previous_mode" ]]
-    [[ $candidate_mode == healthy || $candidate_mode == running ]]
+    [[ $current_healthcheck != configured || $candidate_healthcheck == configured ]]
     [[ $previous_mode != healthy || $candidate_mode == healthy ]]
   done <"$state_dir/previous-readiness"
 

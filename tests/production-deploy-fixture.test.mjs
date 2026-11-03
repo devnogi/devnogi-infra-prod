@@ -97,7 +97,8 @@ const healthchecks = [];
 for (const name of Object.keys(data.services).sort()) {
   const service = data.services[name];
   images.push(name + '|' + service.image);
-  healthchecks.push(name + '|' + (service.healthcheck && !service.healthcheck.disable ? 'healthy' : 'running'));
+  const healthcheckMode = !Object.hasOwn(service, 'healthcheck') ? 'absent' : (service.healthcheck?.disable ? 'disabled' : 'configured');
+  healthchecks.push(name + '|' + healthcheckMode);
   const resources = [];
   for (const mount of service.volumes || []) {
     const sourceValue = mount.type === 'volume' ? data.volumes[mount.source].name : mount.source;
@@ -130,12 +131,14 @@ case "$args" in
     app_host=0.0.0.0
     cache_host=0.0.0.0
     network_name=infra_devnogi-network
+    case "$SCENARIO" in image-health-success|image-health-disabled) app_health= ;; esac
     if [ "$candidate" = 1 ]; then
       if [ "$SERVER" = 2 ]; then app_host=127.0.0.1; cache_host=127.0.0.1; fi
       [ "$SCENARIO" != image-swap ] || { app_image=image/cache:1; cache_image=image/app:1; }
       [ "$SCENARIO" != resource-mismatch ] || app_source=/srv/other
       [ "$SCENARIO" != healthy-to-no-health ] || app_health=
       [ "$SCENARIO" != healthy-to-disabled-health ] || app_health='"disable":true'
+      [ "$SCENARIO" != image-health-disabled ] || app_health='"disable":true'
       [ "$SCENARIO" != candidate-wildcard ] || app_host=0.0.0.0
     else
       [ "$SCENARIO" != prior-no-health-success ] || app_health=
@@ -181,7 +184,13 @@ case "$args" in
   'inspect --format {{.Image}} container-app') echo '${imageApp}' ;;
   'inspect --format {{.Image}} container-cache') echo '${imageCache}' ;;
   *NetworkSettings.Ports*container-app)
-    if [ ! -f "$FIXTURE/started" ]; then host=0.0.0.0
+    if [ ! -f "$FIXTURE/started" ]; then
+      case "$SCENARIO" in
+        ipv6-only-wildcard) printf 'P|8080/tcp|::|18080\\n'; exit 0 ;;
+        custom-ipv6-wildcard) printf 'P|8080/tcp|0.0.0.0|18080\\nP|8080/tcp|2001:db8::1|18080\\n'; exit 0 ;;
+        dual-stack-wildcard) printf 'P|8080/tcp|0.0.0.0|18080\\nP|8080/tcp|::|18080\\n'; exit 0 ;;
+      esac
+      host=0.0.0.0
     elif [ -f "$FIXTURE/rollback-complete" ]; then if [ "$SCENARIO" = rollback-port-mismatch ]; then host=127.0.0.1; else host=0.0.0.0; fi
     elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
     elif [ "$SERVER" = 2 ]; then host=127.0.0.1
@@ -189,7 +198,10 @@ case "$args" in
     printf 'P|8080/tcp|%s|18080\\n' "$host"
     ;;
   *NetworkSettings.Ports*container-cache)
-    if [ ! -f "$FIXTURE/started" ] || [ -f "$FIXTURE/rollback-complete" ]; then host=0.0.0.0
+    if [ ! -f "$FIXTURE/started" ]; then
+      if [ "$SCENARIO" = dual-stack-wildcard ]; then printf 'P|6379/tcp|0.0.0.0|16379\\nP|6379/tcp|::|16379\\n'; exit 0; fi
+      host=0.0.0.0
+    elif [ -f "$FIXTURE/rollback-complete" ]; then host=0.0.0.0
     elif [ "$SCENARIO" = candidate-runtime-wildcard ]; then host=0.0.0.0
     elif [ "$SERVER" = 2 ]; then host=127.0.0.1
     else host=0.0.0.0; fi
@@ -198,6 +210,10 @@ case "$args" in
   *Mounts*container-app) printf 'M|bind|/srv/app|/data|true\\n' ;;
   *Mounts*container-cache) printf 'M|volume|infra_cache-data|/cache|true\\n' ;;
   *NetworkSettings.Networks*container-*) printf 'N|infra_devnogi-network\\n' ;;
+  *'image inspect --format {{json .Config.Healthcheck}}'*${imageApp})
+    case "$SCENARIO" in image-health-success|image-health-disabled) echo '{"Test":["CMD","true"]}' ;; *) echo null ;; esac
+    ;;
+  *'image inspect --format {{json .Config.Healthcheck}}'*${imageCache}) echo null ;;
   *image*inspect*${imageApp}) echo 'image/app@sha256:${'a'.repeat(64)}' ;;
   *image*inspect*${imageCache}) echo 'image/cache@sha256:${'b'.repeat(64)}' ;;
   *' up -d --wait --pull never')
@@ -478,6 +494,36 @@ for (const server of [1, 2]) {
 
 test('prod2 rejects a wildcard candidate binding before mutation', (t) => {
   const { root, state, result } = runDeployment(t, 2, 'candidate-wildcard', { run: '126-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+  assert.equal(existsSync(join(root, 'started')), false);
+});
+
+test('prod2 accepts the exact Docker dual-stack expansion of a Compose wildcard before mutation', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'dual-stack-wildcard', { run: '134-1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+});
+
+for (const scenario of ['ipv6-only-wildcard', 'custom-ipv6-wildcard']) {
+  test(`prod2 rejects ${scenario} as unexpected runtime binding drift`, (t) => {
+    const { root, state, result } = runDeployment(t, 2, scenario, { run: '135-1' });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+    assert.equal(existsSync(join(root, 'started')), false);
+  });
+}
+
+test('prod2 accepts image-level healthcheck continuity for the exact pinned image', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'image-health-success', { run: '136-1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+});
+
+test('prod2 rejects explicitly disabling a proven image-level healthcheck', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'image-health-disabled', { run: '137-1' });
   assert.notEqual(result.status, 0);
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
   assert.equal(existsSync(join(root, 'started')), false);
