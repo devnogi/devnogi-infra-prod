@@ -20,7 +20,9 @@ for (const server of [1, 2]) {
 test('server 2 stages the operations package on an Ubuntu 24.04 runner without applying privileged host changes', () => {
   const workflow = readFileSync(new URL('../.github/workflows/deploy-prod2.yml', import.meta.url), 'utf8');
   assert.match(workflow, /runs-on: ubuntu-24\.04/);
-  assert.match(workflow, /source: "docker-compose-prod2\.yml,ops\/prod2"/);
+  assert.match(workflow, /run: bash scripts\/transfer-prod2\.sh/);
+  assert.match(workflow, /PROD2_SSH_PRIVATE_KEY: \$\{\{ secrets\.PROD2_PEM_KEY \}\}/);
+  assert.doesNotMatch(workflow, /appleboy\/scp-action/);
   assert.match(workflow, /test -s incoming2\/ops\/prod2\/install-logging\.sh/);
   assert.doesNotMatch(workflow, /sudo\s+sh\s+.*ops\/prod2\/install-logging\.sh/);
   assert.doesNotMatch(workflow, /systemctl\s+(?:enable|start).*memonogi-(?:db-backup|drive-upload)\.timer/);

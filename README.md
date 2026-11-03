@@ -79,3 +79,5 @@ PR은 `verify`와 `secret-scan`을 실행합니다. 현재 GitHub Ruleset은 PR�
 운영 배포는 `main` push에서 자동 실행되며 복구 시 `main`에서 수동 실행할 수 있습니다. GitHub의 `production` environment는 `main`만 허용합니다. 두 운영 Compose는 실제 운영 데이터와 자격 증명을 사용하므로 로컬에서 실행하지 않습니다. 배포 실패 시 이전 Compose로 복구하며 volume은 삭제하지 않습니다.
 
 각 서버의 검증된 SSH 공개키 지문을 `PROD1_HOST_FINGERPRINT`, `PROD2_HOST_FINGERPRINT` secret에 설정해야 합니다. 현재 서비스별 실행 이미지가 정확히 하나의 RepoDigest로 확인되지 않거나 서비스·이미지 선언이 변경되면 배포를 중단합니다. 이미지 변경은 별도 digest 승격 절차가 필요합니다.
+
+prod2 파일 전송은 runner의 native OpenSSH로 Ed25519 host key를 다시 수집하고 저장된 fingerprint와 일치할 때만 최대 세 번의 제한된 재시도를 수행합니다. 실패 로그나 개인키는 출력하지 않습니다. prod1에서 fingerprint mismatch가 발생하면 검증을 우회하거나 재실행하지 말고, 별도 신뢰 경로로 현재 서버의 Ed25519 fingerprint를 확인한 뒤 `PROD1_HOST_FINGERPRINT` secret을 갱신해야 합니다.

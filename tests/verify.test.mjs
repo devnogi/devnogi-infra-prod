@@ -131,7 +131,7 @@ test('no arguments checks all Compose files in order with synthetic environment 
     ...streams,
     runTests: (command, args, options) => {
       assert.equal(command, process.execPath);
-      assert.deepEqual(args, ['--test', join(dirname(dirname(script)), 'tests', 'bootstrap-local-auth.test.mjs'), join(dirname(dirname(script)), 'tests', 'prod2-backup.test.mjs'), join(dirname(dirname(script)), 'tests', 'prod2-origin.test.mjs')]);
+      assert.deepEqual(args, ['--test', join(dirname(dirname(script)), 'tests', 'bootstrap-local-auth.test.mjs'), join(dirname(dirname(script)), 'tests', 'prod2-backup.test.mjs'), join(dirname(dirname(script)), 'tests', 'prod2-origin.test.mjs'), join(dirname(dirname(script)), 'tests', 'prod2-transfer.test.mjs')]);
       assert.equal(options.stdio, 'inherit');
       assert.equal(options.shell, false);
       return { status: 0 };
