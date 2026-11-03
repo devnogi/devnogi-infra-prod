@@ -36,7 +36,8 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.match(remote, /cp "\$state_dir\/previous-compose\.yml" "\$root\/\$compose"/);
   assert.match(remote, /cp "\$state_dir\/previous-env" "\$root\/\$env_file"/);
   assert.match(remote, /cmp -s "\$state_dir\/current-render\/images\.map" "\$state_dir\/candidate-render\/images\.map"/);
-  assert.match(remote, /cmp -s "\$state_dir\/previous-resources\/\$service" "\$state_dir\/candidate-render\/resources\/\$service"/);
+  assert.match(remote, /runtime_resources_reproduce_render/);
+  assert.match(remote, /cmp -s "\$state_dir\/current-render\/resources\/\$service" "\$state_dir\/candidate-render\/resources\/\$service"/);
   assert.match(remote, /incoming2\/ops\/prod2/);
   assert.match(remote, /renameat2/);
   assert.match(remote, /candidate-render\/ports/);
@@ -55,6 +56,14 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.doesNotMatch(remote, /down\s+-v|volume\s+rm|image prune/);
   assert.doesNotMatch(remote, /sudo\s+sh\s+.*ops\/prod2\/install-logging\.sh/);
   assert.doesNotMatch(remote, /systemctl\s+(?:enable|start).*memonogi-(?:db-backup|drive-upload)\.timer/);
+});
+
+test('prod1 Kafka keeps the proven private bind and restart policy', () => {
+  const compose = readFileSync(new URL('../docker-compose-prod1.yml', import.meta.url), 'utf8');
+  const kafka = compose.match(/\r?\n  kafka:\r?\n([\s\S]*?)\r?\n  kafka-ui:/)?.[1] ?? '';
+  assert.match(kafka, /restart: unless-stopped/);
+  assert.match(kafka, /"172\.30\.1\.27:9102:9102"/);
+  assert.doesNotMatch(kafka, /\n\s*- "9102:9102"/);
 });
 
 test('the prod2 logging runbook keeps privileged activation explicit and verifiable', () => {

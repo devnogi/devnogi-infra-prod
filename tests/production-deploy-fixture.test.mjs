@@ -80,8 +80,18 @@ fi
 const fs = require('node:fs');
 const path = require('node:path');
 if (process.argv[2] === '-c') {
-  const data = JSON.parse(fs.readFileSync(0, 'utf8'));
-  if (data && typeof data.name === 'string') {
+  const input = fs.readFileSync(0, 'utf8');
+  const declaredVolume = process.argv.indexOf('declared-volume');
+  if (declaredVolume !== -1) {
+    const newline = input.indexOf('\\n');
+    const target = input.slice(0, newline);
+    const data = JSON.parse(input.slice(newline + 1));
+    process.exit(data && typeof data === 'object' && Object.hasOwn(data, target) ? 0 : 1);
+  }
+  const data = JSON.parse(input);
+  if (process.argv.includes('anonymous-label')) {
+    process.exit(data && typeof data === 'object' && data['com.docker.volume.anonymous'] === '' ? 0 : 1);
+  } else if (data && typeof data.name === 'string') {
     process.stdout.write(data.name + '\\n');
   } else if (data === null || (data && typeof data === 'object' && (data.Test == null || data.Test.length === 0))) {
     process.stdout.write('running\\n');
@@ -233,9 +243,38 @@ case "$args" in
     else host=0.0.0.0; fi
     printf 'P|6379/tcp|%s|16379\\n' "$host"
     ;;
-  *Mounts*container-app) printf 'M|bind|/srv/app|/data|true\\n' ;;
+  *Mounts*container-app)
+    printf 'M|bind|/srv/app|/data|true\\n'
+    case "$SCENARIO" in
+      image-anonymous-empty-volume|image-anonymous-nonempty-volume|image-anonymous-missing-label|image-anonymous-misleading-label|image-anonymous-undeclared-target)
+        printf 'M|volume|${'c'.repeat(64)}|/runtime-secrets|true\\n'
+        ;;
+      image-anonymous-nonhex-name)
+        printf 'M|volume|manual-volume|/runtime-secrets|true\\n'
+        ;;
+      image-anonymous-bind-extra)
+        printf 'M|bind|/tmp/runtime-secrets|/runtime-secrets|true\\n'
+        ;;
+    esac
+    ;;
   *Mounts*container-cache) printf 'M|volume|infra_cache-data|/cache|true\\n' ;;
   *NetworkSettings.Networks*container-*) printf 'N|infra_devnogi-network\\n' ;;
+  *'image inspect --format {{json .Config.Volumes}}'*${imageApp})
+    case "$SCENARIO" in
+      image-anonymous-empty-volume|image-anonymous-nonempty-volume|image-anonymous-missing-label|image-anonymous-misleading-label|image-anonymous-nonhex-name|image-anonymous-bind-extra) echo '{"/runtime-secrets":{}}' ;;
+      *) echo null ;;
+    esac
+    ;;
+  *'volume inspect --format {{json .Labels}} '${'c'.repeat(64)})
+    case "$SCENARIO" in
+      image-anonymous-missing-label) echo '{}' ;;
+      image-anonymous-misleading-label) echo '{"note":"com.docker.volume.anonymous"}' ;;
+      *) echo '{"com.docker.volume.anonymous":""}' ;;
+    esac
+    ;;
+  *'exec container-app sh -c '*' /runtime-secrets')
+    [ "$SCENARIO" != image-anonymous-nonempty-volume ]
+    ;;
   *'image inspect --format {{json .Config.Healthcheck}}'*${imageApp})
     case "$SCENARIO" in
       image-health-success|image-health-disabled|none-runtime-image-active) echo '{"Test":["CMD","true"]}' ;;
@@ -535,6 +574,35 @@ test('prod2 accepts the exact Docker dual-stack expansion of a Compose wildcard 
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
   assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
 });
+
+test('prod1 accepts an empty image-declared anonymous volume across recreation', (t) => {
+  const { root, state, result } = runDeployment(t, 1, 'image-anonymous-empty-volume', { run: '144-1' });
+  assert.equal(result.status, 0, `${result.stderr}\n${readFileSync(join(root, 'docker.args'), 'utf8')}`);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  assert.equal(readFileSync(join(root, 'up-count'), 'utf8'), '1');
+});
+
+test('prod1 rejects a non-empty image-declared anonymous volume before mutation', (t) => {
+  const { root, state, result } = runDeployment(t, 1, 'image-anonymous-nonempty-volume', { run: '145-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+  assert.equal(existsSync(join(root, 'started')), false);
+});
+
+for (const [scenario, run] of [
+  ['image-anonymous-missing-label', '146-1'],
+  ['image-anonymous-misleading-label', '147-1'],
+  ['image-anonymous-nonhex-name', '148-1'],
+  ['image-anonymous-undeclared-target', '149-1'],
+  ['image-anonymous-bind-extra', '150-1'],
+]) {
+  test(`prod1 rejects unsafe runtime volume exception ${scenario}`, (t) => {
+    const { root, state, result } = runDeployment(t, 1, scenario, { run });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+    assert.equal(existsSync(join(root, 'started')), false);
+  });
+}
 
 for (const scenario of ['ipv6-only-wildcard', 'custom-ipv6-wildcard']) {
   test(`prod2 rejects ${scenario} as unexpected runtime binding drift`, (t) => {

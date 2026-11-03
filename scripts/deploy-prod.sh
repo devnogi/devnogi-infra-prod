@@ -82,6 +82,63 @@ inspect_resources() {
   } | sed '/^$/d' | sort
 }
 
+runtime_resources_reproduce_render() {
+  local container=$1 expected_image=$2 actual=$3 rendered=$4 filtered declared_volumes line marker kind source target rw extra labels status
+  cmp -s "$actual" "$rendered" && return 0
+  filtered="${actual}.rendered-contract.$$"
+  : >"$filtered"
+  declared_volumes=$(docker image inspect --format '{{json .Config.Volumes}}' "$expected_image") || {
+    rm -f -- "$filtered"
+    return 1
+  }
+  while IFS= read -r line || [[ -n $line ]]; do
+    if grep -Fqx -- "$line" "$rendered"; then
+      printf '%s\n' "$line" >>"$filtered"
+      continue
+    fi
+    IFS='|' read -r marker kind source target rw extra <<<"$line"
+    if [[ $marker != M || $kind != volume || ! $source =~ ^[0-9a-f]{64}$ || $target != /* || $rw != true || -n $extra ]]; then
+      rm -f -- "$filtered"
+      return 1
+    fi
+    if ! { printf '%s\n' "$target"; printf '%s\n' "$declared_volumes"; } | python3 -c '
+import json, sys
+target = sys.stdin.readline().rstrip("\n")
+value = json.load(sys.stdin)
+raise SystemExit(0 if isinstance(value, dict) and target in value else 1)
+' declared-volume; then
+      rm -f -- "$filtered"
+      return 1
+    fi
+    labels=$(docker volume inspect --format '{{json .Labels}}' "$source") || {
+      rm -f -- "$filtered"
+      return 1
+    }
+    if ! printf '%s\n' "$labels" | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+raise SystemExit(0 if isinstance(value, dict) and value.get("com.docker.volume.anonymous") == "" else 1)
+' anonymous-label; then
+      rm -f -- "$filtered"
+      return 1
+    fi
+    if ! docker exec "$container" sh -c '
+target=$1
+[ -d "$target" ] || exit 1
+command -v find >/dev/null 2>&1 || exit 1
+first=$(find "$target" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) || exit 1
+[ -z "$first" ]
+' sh "$target" >/dev/null; then
+      rm -f -- "$filtered"
+      return 1
+    fi
+  done <"$actual"
+  cmp -s "$filtered" "$rendered"
+  status=$?
+  rm -f -- "$filtered"
+  return "$status"
+}
+
 inspect_ports() {
   docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{if $bindings}}{{range $bindings}}P|{{$port}}|{{.HostIp}}|{{.HostPort}}{{"\n"}}{{end}}{{end}}{{end}}' "$1" |
     sed '/^$/d' | sort
@@ -215,7 +272,7 @@ same_runtime() {
     [[ $(docker inspect --format '{{.Image}}' "$container") == "$expected_image" ]] || return 1
     actual_resources="$state_dir/current-resources/$service"
     inspect_resources "$container" >"$actual_resources"
-    cmp -s "$expected_resources/$service" "$actual_resources" || return 1
+    runtime_resources_reproduce_render "$container" "$expected_image" "$actual_resources" "$expected_resources/$service" || return 1
     actual_ports="$state_dir/current-ports/$service"
     inspect_ports "$container" >"$actual_ports"
     cmp -s "$expected_ports/$service" "$actual_ports" || return 1
@@ -232,7 +289,7 @@ candidate_ready() {
     [[ $previous_mode != healthy || $candidate_mode == healthy ]] || return 1
     runtime_ready "$candidate_mode" "$container" || return 1
   done <"$state_dir/previous-readiness"
-  same_runtime "$state_dir/previous-resources" "$state_dir/candidate-render/ports"
+  same_runtime "$state_dir/candidate-render/resources" "$state_dir/candidate-render/ports"
 }
 
 rollback_ready() {
@@ -243,7 +300,7 @@ rollback_ready() {
     [[ -n $container && $container != *$'\n'* ]] || return 1
     runtime_ready "$expected" "$container" || return 1
   done <"$state_dir/previous-readiness"
-  same_runtime "$state_dir/previous-resources" "$state_dir/previous-ports"
+  same_runtime "$state_dir/current-render/resources" "$state_dir/previous-ports"
 }
 
 atomic_replace_path() {
@@ -469,9 +526,12 @@ rollout_main() {
   render_compose "$inputs/$compose" "$inputs/$env_file" "$state_dir/candidate-render"
   cmp -s "$state_dir/current-render/images.map" "$state_dir/candidate-render/images.map"
   for service in $services; do
-    cmp -s "$state_dir/previous-resources/$service" "$state_dir/current-render/resources/$service"
+    container=$(docker compose --project-name "$project" --project-directory "$root" -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" ps --all -q "$service")
+    expected_image=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/previous-image-ids.map")
+    [[ $expected_image =~ ^sha256:[0-9a-f]{64}$ ]]
+    runtime_resources_reproduce_render "$container" "$expected_image" "$state_dir/previous-resources/$service" "$state_dir/current-render/resources/$service"
     current_ports_reproduce_runtime "$state_dir/previous-ports/$service" "$state_dir/current-render/ports/$service"
-    cmp -s "$state_dir/previous-resources/$service" "$state_dir/candidate-render/resources/$service"
+    cmp -s "$state_dir/current-render/resources/$service" "$state_dir/candidate-render/resources/$service"
     if [[ $server == 2 ]]; then
       awk -F '|' '$1 == "P" && $3 != "127.0.0.1" { bad=1 } END { exit (bad ? 1 : 0) }' "$state_dir/candidate-render/ports/$service"
     fi
