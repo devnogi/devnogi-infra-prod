@@ -37,6 +37,8 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.match(remote, /cp "\$state_dir\/previous-env" "\$root\/\$env_file"/);
   assert.match(remote, /cmp -s "\$state_dir\/current-render\/images\.map" "\$state_dir\/candidate-render\/images\.map"/);
   assert.match(remote, /runtime_resources_reproduce_render/);
+  assert.match(remote, /for entry do/);
+  assert.doesNotMatch(remote, /command -v find|\$\(find /);
   assert.match(remote, /cmp -s "\$state_dir\/current-render\/resources\/\$service" "\$state_dir\/candidate-render\/resources\/\$service"/);
   assert.match(remote, /incoming2\/ops\/prod2/);
   assert.match(remote, /renameat2/);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,56 @@ const imageCache = `sha256:${'2'.repeat(64)}`;
 function executable(path, content) {
   writeFileSync(path, content, { mode: 0o755 });
 }
+
+function bashPath(path) {
+  if (process.platform !== 'win32') return path;
+  const result = spawnSync(bash, ['-c', 'cygpath -u "$1"', 'sh', path], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+test('anonymous volume shell check accepts only an accessible empty directory', (t) => {
+  const source = readFileSync(script, 'utf8');
+  const match = /if ! docker exec "\$container" sh -c '\r?\n([\s\S]*?)\r?\n' sh "\$target" >\/dev\/null; then/.exec(source);
+  assert.ok(match, 'empty-volume shell check was not found');
+  const check = match[1];
+  const root = mkdtempSync(join(tmpdir(), 'infra-volume-empty-check-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const run = (directory) => spawnSync(bash, ['-c', check, 'sh', bashPath(directory)], { encoding: 'utf8' });
+  const directory = (name) => {
+    const value = join(root, name);
+    mkdirSync(value);
+    return value;
+  };
+
+  assert.equal(run(directory('empty')).status, 0);
+  for (const [name, entry] of [['visible', 'entry'], ['hidden', '.hidden'], ['double-dot', '..hidden']]) {
+    const value = directory(name);
+    writeFileSync(join(value, entry), 'data');
+    assert.notEqual(run(value).status, 0, name);
+  }
+
+  if (process.platform !== 'win32') {
+    const brokenLink = directory('broken-link');
+    symlinkSync('missing-target', join(brokenLink, 'broken'));
+    assert.notEqual(run(brokenLink).status, 0, 'broken symlink');
+
+    const globName = directory('glob-name');
+    writeFileSync(join(globName, '[literal]*?'), 'data');
+    assert.notEqual(run(globName).status, 0, 'glob-character filename');
+
+    if (process.getuid?.() !== 0) {
+      const inaccessible = directory('inaccessible');
+      writeFileSync(join(inaccessible, 'protected'), 'data');
+      chmodSync(inaccessible, 0o000);
+      try {
+        assert.notEqual(run(inaccessible).status, 0, 'inaccessible directory');
+      } finally {
+        chmodSync(inaccessible, 0o700);
+      }
+    }
+  }
+});
 
 function setupFixture(t, server, scenario, run = '123-1') {
   const root = mkdtempSync(join(tmpdir(), `infra-prod${server}-deploy-`));
