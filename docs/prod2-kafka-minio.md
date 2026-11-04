@@ -66,7 +66,7 @@ curl --resolve storage.memonogi.com:443:220.127.88.196 \
 
 ## 애플리케이션 전환
 
-각 저장소의 기존 `PROD2_ENV_FILE`을 안전한 위치에 백업한 뒤 다음 값만 갱신한다.
+서버의 기존 `.env.prod`를 먼저 백업하고, 각 저장소의 현재 production workflow가 실제로 참조하는 secret 계약을 갱신한다. Auth는 전체 파일형 `AUTH_SERVER_ENV`, Community는 개별 `PROD_MINIO_*`·`PROD_KAFKA_*`, Batch는 공유 `spring-prod` workflow의 `batch` profile에 상속되는 production secret을 사용한다. 존재하지 않는 공통 `PROD2_ENV_FILE`을 가정하지 않는다. 다음 애플리케이션 값만 변경한다.
 
 - Auth: `KAFKA_BOOTSTRAP_SERVERS=kafka:29092`, `MINIO_ENDPOINT=https://storage.memonogi.com`, 새 Auth access/secret, `S3_BUCKET=auth-profile`
 - Community: `KAFKA_BOOTSTRAP_SERVERS=kafka:29092`, 같은 공개 MinIO endpoint, 새 Community access/secret, 기존 bucket 이름
