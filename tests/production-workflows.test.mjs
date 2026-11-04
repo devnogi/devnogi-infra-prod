@@ -35,7 +35,11 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.match(remote, /record_result ROLLED_BACK/);
   assert.match(remote, /cp "\$state_dir\/previous-compose\.yml" "\$root\/\$compose"/);
   assert.match(remote, /cp "\$state_dir\/previous-env" "\$root\/\$env_file"/);
-  assert.match(remote, /cmp -s "\$state_dir\/current-render\/images\.map" "\$state_dir\/candidate-render\/images\.map"/);
+  assert.match(remote, /validate_service_transition "\$state_dir\/current-render\/images\.map" "\$state_dir\/candidate-render\/images\.map"/);
+  assert.match(remote, /validate_prod2_bootstrap_contract/);
+  assert.match(remote, /validate_profile_continuity/);
+  assert.match(remote, /--profile bootstrap run --rm --no-deps --pull never "\$service"/);
+  assert.match(remote, /rm -f -s \$services/);
   assert.match(remote, /runtime_resources_reproduce_render/);
   assert.match(remote, /for entry do/);
   assert.doesNotMatch(remote, /command -v find|\$\(find /);
