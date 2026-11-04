@@ -89,11 +89,12 @@ services:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-ec"]
-    command: |
-      for topic in USER_INFO_UPDATE_EVENT USER_VERIFICATION_VERIFY_EVENT USER_INFO_UPDATE_EVENT.DLT; do
-        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
-          --topic "$$topic" --partitions 1 --replication-factor 1
-      done
+    command:
+      - |
+        for topic in USER_INFO_UPDATE_EVENT USER_VERIFICATION_VERIFY_EVENT USER_INFO_UPDATE_EVENT.DLT; do
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+            --topic "$$topic" --partitions 1 --replication-factor 1
+        done
     networks:
       - devnogi-network
 
@@ -165,23 +166,24 @@ services:
       COMMUNITY_MINIO_SECRET_KEY: ${COMMUNITY_MINIO_SECRET_KEY}
       COMMUNITY_MINIO_BUCKET: ${COMMUNITY_MINIO_BUCKET}
     entrypoint: ["/bin/sh", "-ec"]
-    command: |
-      export MC_HOST_prod="http://$$MINIO_ROOT_USER:$$MINIO_ROOT_PASSWORD@minio:9001"
-      mc ready prod >/dev/null
-      mc mb --ignore-existing "prod/$$AUTH_MINIO_BUCKET" >/dev/null
-      mc mb --ignore-existing "prod/$$COMMUNITY_MINIO_BUCKET" >/dev/null
-      mc anonymous set download "prod/$$AUTH_MINIO_BUCKET" >/dev/null
-      mc anonymous set none "prod/$$COMMUNITY_MINIO_BUCKET" >/dev/null
-      printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$AUTH_MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::'"$$AUTH_MINIO_BUCKET"'/*"]}]}' > /tmp/auth-policy.json
-      printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'/*"]}]}' > /tmp/community-policy.json
-      # policy create overwrites an existing named policy; user add updates an existing user's secret.
-      mc admin policy create prod auth-profile-rw /tmp/auth-policy.json >/dev/null
-      mc admin policy create prod community-media-rw /tmp/community-policy.json >/dev/null
-      printf '%s\n%s\n' "$$AUTH_MINIO_ACCESS_KEY" "$$AUTH_MINIO_SECRET_KEY" | mc admin user add prod >/dev/null
-      printf '%s\n%s\n' "$$COMMUNITY_MINIO_ACCESS_KEY" "$$COMMUNITY_MINIO_SECRET_KEY" | mc admin user add prod >/dev/null
-      mc admin policy attach prod auth-profile-rw --user "$$AUTH_MINIO_ACCESS_KEY" >/dev/null
-      mc admin policy attach prod community-media-rw --user "$$COMMUNITY_MINIO_ACCESS_KEY" >/dev/null
-      rm -f /tmp/auth-policy.json /tmp/community-policy.json
+    command:
+      - |
+        export MC_HOST_prod="http://$$MINIO_ROOT_USER:$$MINIO_ROOT_PASSWORD@minio:9001"
+        mc ready prod >/dev/null
+        mc mb --ignore-existing "prod/$$AUTH_MINIO_BUCKET" >/dev/null
+        mc mb --ignore-existing "prod/$$COMMUNITY_MINIO_BUCKET" >/dev/null
+        mc anonymous set download "prod/$$AUTH_MINIO_BUCKET" >/dev/null
+        mc anonymous set none "prod/$$COMMUNITY_MINIO_BUCKET" >/dev/null
+        printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$AUTH_MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::'"$$AUTH_MINIO_BUCKET"'/*"]}]}' > /tmp/auth-policy.json
+        printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'/*"]}]}' > /tmp/community-policy.json
+        # policy create overwrites an existing named policy; user add updates an existing user's secret.
+        mc admin policy create prod auth-profile-rw /tmp/auth-policy.json >/dev/null
+        mc admin policy create prod community-media-rw /tmp/community-policy.json >/dev/null
+        printf '%s\n%s\n' "$$AUTH_MINIO_ACCESS_KEY" "$$AUTH_MINIO_SECRET_KEY" | mc admin user add prod >/dev/null
+        printf '%s\n%s\n' "$$COMMUNITY_MINIO_ACCESS_KEY" "$$COMMUNITY_MINIO_SECRET_KEY" | mc admin user add prod >/dev/null
+        mc admin policy attach prod auth-profile-rw --user "$$AUTH_MINIO_ACCESS_KEY" >/dev/null
+        mc admin policy attach prod community-media-rw --user "$$COMMUNITY_MINIO_ACCESS_KEY" >/dev/null
+        rm -f /tmp/auth-policy.json /tmp/community-policy.json
     networks:
       - devnogi-network
 
