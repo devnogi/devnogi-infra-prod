@@ -6,6 +6,8 @@ prod2 애플리케이션 로그, 일일 MySQL 백업 및 암호화된 Google Dri
 
 공인 TLS, origin 접근 경계 및 요청 제한의 수동 적용·검증·복구 절차는 [origin 운영 가이드](ops/prod2/nginx/README.md)를 따릅니다.
 
+Kafka·MinIO를 prod2에 초기화하고 애플리케이션과 공개 storage origin을 전환하는 순서는 [prod2 Kafka·MinIO 전환 가이드](docs/prod2-kafka-minio.md)를 따릅니다. 기존 prod1 데이터는 자동 복사하지 않습니다.
+
 ## 표준 검증
 
 Node.js 20 이상, Bash(Windows는 Git for Windows), Docker Compose v2를 준비하고 실행합니다. 설정 검사에는 Docker 데몬이나 운영 비밀값이 필요하지 않습니다.
@@ -82,7 +84,7 @@ PR은 `verify`와 `secret-scan`을 실행합니다. 현재 GitHub Ruleset은 PR�
 
 전송 단계만 최대 세 번 제한적으로 재시도하며, 입력은 commit SHA와 workflow run ID별 staging 디렉터리에 격리한 뒤 읽기 전용으로 고정합니다. 원격 rollout은 SSH 세션과 분리된 host-owned 프로세스로 실행하므로 runner/SSH가 끊겨도 계속 진행합니다. commit-ready를 받은 watchdog은 ACK 후에도 살아 있고, rollout이 lock을 닫아 `SUCCESS`를 기록한 뒤 lock을 직접 획득해 terminal result를 확인하고 `finished`를 기록합니다. ACK 이후 `SUCCESS` 전에 rollout이 사라지면 watchdog이 lock을 획득해 전체 이전 상태를 복구합니다. runner는 `result`와 `finished`가 모두 확인된 경우에만 성공 staging을 정리합니다. 완료되지 않은 다른 rollout이 lock을 보유하면 새 배포는 변경 전에 중단됩니다.
 
-기존 컨테이너가 healthcheck를 제공하면 반드시 `healthy`여야 하고 후보도 healthcheck를 유지해 `healthy`가 되어야 합니다. 기존 Compose에 healthcheck가 없는 최초 전환은 컨테이너가 `running`일 때만 허용합니다. 변경 전에는 현재 Compose가 실제 mount/network, HostIp/HostPort, healthcheck readiness를 서비스별로 정확히 재현하는지 먼저 확인하며 drift가 있으면 컨테이너를 변경하지 않습니다. 롤백은 배포 전 기록한 서비스별 readiness(`healthy` 또는 healthcheck 없는 `running`)를 그대로 검증합니다. 후보의 서비스별 image 매핑과 실제 mount/network가 기존 실행 상태와 다르거나, 현재 서비스별 실행 이미지가 정확히 하나의 RepoDigest로 확인되지 않으면 변경 전에 배포를 중단합니다. prod2의 모든 published port 후보는 `127.0.0.1` binding이어야 하며 배포 후 실제 HostIp/HostPort가 후보와 정확히 같아야 합니다. 롤백은 배포 전에 기록한 HostIp/HostPort를 정확히 복구합니다. 포트 변경은 허용하지만 이미지 변경은 별도 digest 승격 절차가 필요합니다.
+기존 컨테이너가 healthcheck를 제공하면 반드시 `healthy`여야 하고 후보도 healthcheck를 유지해 `healthy`가 되어야 합니다. 기존 Compose에 healthcheck가 없는 최초 전환은 컨테이너가 `running`일 때만 허용합니다. 변경 전에는 현재 Compose가 실제 mount/network, HostIp/HostPort, healthcheck readiness를 서비스별로 정확히 재현하는지 먼저 확인하며 drift가 있으면 컨테이너를 변경하지 않습니다. 롤백은 배포 전 기록한 서비스별 readiness(`healthy` 또는 healthcheck 없는 `running`)를 그대로 검증합니다. 후보의 기존 서비스별 image 매핑과 실제 mount/network가 달라지거나 현재 실행 이미지가 정확히 하나의 RepoDigest로 확인되지 않으면 변경 전에 배포를 중단합니다. 예외는 registry에서 다시 받을 수 없는 legacy MinIO 하나뿐이며, prod1에서 checksum 검증해 이전한 이미지가 현재 Compose에 정확한 `sha256:<image-id>`로 선언되고 실제 container image ID와 일치할 때만 허용합니다. tag-only·digest 없는 다른 이미지는 허용하지 않습니다. 최초 prod2 전환은 기존 서비스가 전혀 바뀌지 않은 상태에서 정확히 Kafka, Kafka UI, MinIO만 추가할 수 있고 bootstrap profile도 고정 계약과 일치해야 합니다. prod2의 모든 published port 후보는 `127.0.0.1` binding이어야 하며 배포 후 실제 HostIp/HostPort가 후보와 정확히 같아야 합니다. 롤백은 배포 전에 기록한 HostIp/HostPort를 정확히 복구합니다. 일반 포트·이미지 변경은 별도 승격 절차가 필요합니다.
 
 현재 Compose의 `0.0.0.0` wildcard는 변경 전 재현 검사에서만 Docker가 같은 port를 `0.0.0.0`과 `::` 두 binding으로 확장한 경우와 동등하게 봅니다. 단독 IPv6, custom 주소, target/protocol/HostPort 불일치는 거부하며 후보 배포 후와 롤백 검증은 정규화하지 않습니다. Compose healthcheck는 `configured`, `disabled`, `absent`를 구분합니다. Container/image의 `Config.Healthcheck.Test`가 `NONE`, `null`, empty이면 inactive `running`으로 보고, 유효한 `CMD` 또는 `CMD-SHELL`만 active `healthy`로 인정합니다. 알 수 없거나 잘못된 metadata는 배포를 중단합니다. `absent`는 정확히 pin된 동일 image의 active Dockerfile healthcheck metadata가 확인될 때만 기존 `healthy` 상태를 재현한다고 판단하며, 명시적 disable·제거 또는 image 매핑 변경은 거부합니다.
 

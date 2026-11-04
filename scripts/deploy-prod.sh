@@ -312,6 +312,184 @@ rollback_ready() {
   same_runtime "$state_dir/current-render/resources" "$state_dir/previous-ports" exact
 }
 
+validate_prod2_bootstrap_contract() {
+  local candidate_images=$1 additions=$2 service image kafka_image kafka_init_image minio_image minio_init_image expected_network="N|${project}_devnogi-network"
+  local expected_additions="kafka
+kafka-ui
+minio"
+
+  [[ $server == 2 ]] || return 1
+  cmp -s <(printf '%s\n' "$expected_additions") "$additions" || return 1
+
+  while IFS='|' read -r service image; do
+    grep -Fqx -- "$service" "$additions" || continue
+    case $service in
+      kafka)
+        [[ $image =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] || return 1
+        printf 'M|bind|/opt/kafka/data|/var/lib/kafka/data|true\n%s\n' "$expected_network" |
+          cmp -s - "$state_dir/candidate-render/resources/$service" || return 1
+        printf 'P|9102/tcp|127.0.0.1|9102\n' |
+          cmp -s - "$state_dir/candidate-render/ports/$service" || return 1
+        ;;
+      kafka-ui)
+        [[ $image =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] || return 1
+        printf '%s\n' "$expected_network" |
+          cmp -s - "$state_dir/candidate-render/resources/$service" || return 1
+        printf 'P|9112/tcp|127.0.0.1|9112\n' |
+          cmp -s - "$state_dir/candidate-render/ports/$service" || return 1
+        ;;
+      minio)
+        [[ $image =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+        printf 'M|bind|/opt/infra/minio-data|/data|true\n%s\n' "$expected_network" |
+          cmp -s - "$state_dir/candidate-render/resources/$service" || return 1
+        printf 'P|9000/tcp|127.0.0.1|9000\nP|9001/tcp|127.0.0.1|9001\n' |
+          cmp -s - "$state_dir/candidate-render/ports/$service" || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done <"$candidate_images"
+
+  for service in kafka minio; do
+    grep -Fqx -- "$service|configured" "$state_dir/candidate-render/healthchecks.map" || return 1
+  done
+  grep -Fqx -- 'kafka-ui|absent' "$state_dir/candidate-render/healthchecks.map" || return 1
+  printf 'kafka-init\nminio-init\n' >"$state_dir/bootstrap-init-services"
+  comm -13 "$state_dir/candidate-services" <(cut -d '|' -f 1 "$state_dir/candidate-profile-render/images.map") |
+    cmp -s - "$state_dir/bootstrap-init-services" || return 1
+  while IFS= read -r service; do
+    grep -Fqx -- "$service|absent" "$state_dir/candidate-profile-render/healthchecks.map" || return 1
+    printf '%s\n' "$expected_network" |
+      cmp -s - "$state_dir/candidate-profile-render/resources/$service" || return 1
+    [[ ! -s $state_dir/candidate-profile-render/ports/$service ]] || return 1
+    image=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/candidate-profile-render/images.map")
+    if [[ $service == kafka-init ]]; then
+      [[ $image =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] || return 1
+    else
+      [[ $image =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+    fi
+  done <"$state_dir/bootstrap-init-services"
+  kafka_image=$(awk -F '|' '$1 == "kafka" { print $2 }' "$candidate_images")
+  kafka_init_image=$(awk -F '|' '$1 == "kafka-init" { print $2 }' "$state_dir/candidate-profile-render/images.map")
+  minio_image=$(awk -F '|' '$1 == "minio" { print $2 }' "$candidate_images")
+  minio_init_image=$(awk -F '|' '$1 == "minio-init" { print $2 }' "$state_dir/candidate-profile-render/images.map")
+  [[ -n $kafka_image && $kafka_init_image == "$kafka_image" ]] || return 1
+  [[ -n $minio_image && $minio_init_image == "$minio_image" ]] || return 1
+}
+
+validate_service_transition() {
+  local current_images=$1 candidate_images=$2 current_names="$state_dir/current-services" candidate_names="$state_dir/candidate-services"
+  local removed="$state_dir/removed-services" additions="$state_dir/new-services" line service
+  cut -d '|' -f 1 "$current_images" >"$current_names"
+  cut -d '|' -f 1 "$candidate_images" >"$candidate_names"
+  comm -23 "$current_names" "$candidate_names" >"$removed"
+  comm -13 "$current_names" "$candidate_names" >"$additions"
+  [[ ! -s $removed ]] || return 1
+  while IFS= read -r line; do
+    service=${line%%|*}
+    grep -Fqx -- "$line" "$candidate_images" || return 1
+    grep -Fqx -- "$service" "$current_names" || return 1
+  done <"$current_images"
+  if [[ ! -s $additions ]]; then
+    cmp -s "$current_images" "$candidate_images"
+    validate_profile_continuity
+    printf 'steady\n' >"$state_dir/transition-mode"
+    return 0
+  fi
+  validate_prod2_bootstrap_contract "$candidate_images" "$additions"
+  printf 'prod2-bootstrap\n' >"$state_dir/transition-mode"
+}
+
+validate_profile_continuity() {
+  local current_profile_names="$state_dir/current-profile-services" candidate_profile_names="$state_dir/candidate-profile-services"
+  local current_only="$state_dir/current-profile-only-services" candidate_only="$state_dir/candidate-profile-only-services" service current_line
+  cut -d '|' -f 1 "$state_dir/current-profile-render/images.map" >"$current_profile_names"
+  cut -d '|' -f 1 "$state_dir/candidate-profile-render/images.map" >"$candidate_profile_names"
+  comm -13 "$state_dir/current-services" "$current_profile_names" >"$current_only"
+  comm -13 "$state_dir/candidate-services" "$candidate_profile_names" >"$candidate_only"
+  cmp -s "$current_only" "$candidate_only" || return 1
+  while IFS= read -r service; do
+    current_line=$(awk -F '|' -v service="$service" '$1 == service { print }' "$state_dir/current-profile-render/images.map")
+    [[ -n $current_line ]] || return 1
+    grep -Fqx -- "$current_line" "$state_dir/candidate-profile-render/images.map" || return 1
+    cmp -s "$state_dir/current-profile-render/resources/$service" "$state_dir/candidate-profile-render/resources/$service" || return 1
+    cmp -s "$state_dir/current-profile-render/ports/$service" "$state_dir/candidate-profile-render/ports/$service" || return 1
+    current_line=$(awk -F '|' -v service="$service" '$1 == service { print }' "$state_dir/current-profile-render/healthchecks.map")
+    [[ -n $current_line ]] || return 1
+    grep -Fqx -- "$current_line" "$state_dir/candidate-profile-render/healthchecks.map" || return 1
+  done <"$current_only"
+}
+
+pull_new_service_images() {
+  local service image image_id digests source_images="$state_dir/candidate-render/images.map"
+  : >"$state_dir/new-image-ids.map"
+  if [[ $(<"$state_dir/transition-mode") == prod2-bootstrap ]]; then
+    source_images="$state_dir/candidate-profile-render/images.map"
+    cat "$state_dir/new-services" "$state_dir/bootstrap-init-services" >"$state_dir/bootstrap-services"
+  else
+    : >"$state_dir/bootstrap-services"
+  fi
+  while IFS='|' read -r service image; do
+    grep -Fqx -- "$service" "$state_dir/bootstrap-services" || continue
+    if [[ $image =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      docker image inspect "$image" >/dev/null
+    elif ! docker image inspect "$image" >/dev/null 2>&1; then
+      docker pull "$image"
+    fi
+    image_id=$(docker image inspect --format '{{.Id}}' "$image")
+    [[ $image_id =~ ^sha256:[0-9a-f]{64}$ ]]
+    if [[ $image =~ ^sha256: ]]; then
+      [[ $image_id == "$image" ]]
+    else
+      digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image")
+      printf '%s\n' "$digests" | grep -Fqx -- "$image"
+    fi
+    printf '%s|%s\n' "$service" "$image_id" >>"$state_dir/new-image-ids.map"
+  done <"$source_images"
+}
+
+new_services_ready() {
+  local service expected_image container actual_resources actual_ports mode
+  [[ -s $state_dir/new-services ]] || return 0
+  while IFS= read -r service; do
+    valid_service "$service" || return 1
+    expected_image=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/new-image-ids.map")
+    [[ $expected_image =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+    container=$(docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" ps --all -q "$service") || return 1
+    [[ -n $container && $container != *$'\n'* ]] || return 1
+    [[ $(docker inspect --format '{{.Image}}' "$container") == "$expected_image" ]] || return 1
+    case $service in
+      kafka|minio) runtime_ready healthy "$container" || return 1 ;;
+      kafka-ui)
+        mode=$(container_health_mode "$container") || return 1
+        [[ $mode == running || $mode == healthy ]] || return 1
+        runtime_ready "$mode" "$container" || return 1
+        ;;
+      *) return 1 ;;
+    esac
+    actual_resources="$state_dir/current-resources/$service"
+    inspect_resources "$container" >"$actual_resources"
+    runtime_resources_reproduce_render "$container" "$expected_image" "$actual_resources" "$state_dir/candidate-render/resources/$service" || return 1
+    actual_ports="$state_dir/current-ports/$service"
+    inspect_ports "$container" >"$actual_ports"
+    current_ports_reproduce_runtime "$actual_ports" "$state_dir/candidate-render/ports/$service" || return 1
+  done <"$state_dir/new-services"
+}
+
+run_bootstrap_initializers() {
+  [[ $(<"$state_dir/transition-mode") == prod2-bootstrap ]] || return 0
+  local service
+  while IFS= read -r service; do
+    docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" --profile bootstrap run --rm --no-deps --pull never "$service"
+  done <"$state_dir/bootstrap-init-services"
+}
+
+remove_new_services() {
+  [[ -s $state_dir/new-services ]] || return 0
+  local services
+  services=$(tr '\n' ' ' <"$state_dir/new-services")
+  docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" rm -f -s $services
+}
+
 atomic_replace_path() {
   local source=$1 target=$2
   python3 - "$source" "$target" <<'PY'
@@ -376,6 +554,7 @@ load_state() {
   valid_service "$project"
   valid_path "$root"
   [[ -s $state_dir/previous-compose.yml && -s $state_dir/previous-env && -s $state_dir/previous-images.yml ]]
+  [[ -f $state_dir/new-services && -f $state_dir/transition-mode ]]
   [[ $(<"$state_dir/previous-last-presence") == absent || -s $state_dir/previous-last-sha ]]
   if [[ $server == 2 ]]; then
     [[ $(<"$state_dir/previous-ops-presence") == absent || -e $state_dir/previous-prod2-ops || -L $state_dir/previous-prod2-ops ]]
@@ -384,6 +563,7 @@ load_state() {
 
 rollback() {
   local status=0
+  remove_new_services || status=1
   cp "$state_dir/previous-compose.yml" "$root/$compose"
   cp "$state_dir/previous-env" "$root/$env_file"
   chmod 600 "$root/$env_file"
@@ -493,11 +673,13 @@ rollout_main() {
   valid_service "$project"
   services=$(docker compose --project-name "$project" --project-directory "$root" -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" config --services)
   [[ -n $services ]]
-  mkdir "$state_dir/previous-resources" "$state_dir/previous-ports" "$state_dir/current-resources" "$state_dir/current-ports" "$state_dir/current-render" "$state_dir/candidate-render"
+  mkdir "$state_dir/previous-resources" "$state_dir/previous-ports" "$state_dir/current-resources" "$state_dir/current-ports" "$state_dir/current-render" "$state_dir/candidate-render" "$state_dir/current-profile-render" "$state_dir/candidate-profile-render"
   : >"$state_dir/previous-readiness"
   : >"$state_dir/previous-image-ids.map"
   : >"$state_dir/previous-image-health.map"
   printf 'services:\n' >"$state_dir/previous-images.yml"
+  render_compose "$state_dir/previous-compose.yml" "$state_dir/previous-env" "$state_dir/current-render"
+  COMPOSE_PROFILES=bootstrap render_compose "$state_dir/previous-compose.yml" "$state_dir/previous-env" "$state_dir/current-profile-render"
 
   for service in $services; do
     valid_service "$service"
@@ -519,21 +701,28 @@ rollout_main() {
 
     image_id=$(docker inspect --format '{{.Image}}' "$container")
     [[ $image_id =~ ^sha256:[0-9a-f]{64}$ ]]
-    digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image_id")
-    set -- $digests
-    [[ $# -eq 1 ]]
-    printf '%s\n' "$1" | grep -Eq '@sha256:[0-9a-f]{64}$'
+    rendered_image=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/current-render/images.map")
+    if [[ $server == 2 && $service == minio && $rendered_image =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      [[ $rendered_image == "$image_id" ]]
+      pinned_image=$image_id
+    else
+      digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image_id")
+      set -- $digests
+      [[ $# -eq 1 ]]
+      printf '%s\n' "$1" | grep -Eq '@sha256:[0-9a-f]{64}$'
+      pinned_image=$1
+    fi
     printf '%s|%s\n' "$service" "$image_id" >>"$state_dir/previous-image-ids.map"
     image_readiness=$(image_health_mode "$image_id")
     printf '%s|%s\n' "$service" "$image_readiness" >>"$state_dir/previous-image-health.map"
-    printf '  %s:\n    image: "%s"\n' "$service" "$1" >>"$state_dir/previous-images.yml"
+    printf '  %s:\n    image: "%s"\n' "$service" "$pinned_image" >>"$state_dir/previous-images.yml"
     inspect_resources "$container" >"$state_dir/previous-resources/$service"
     inspect_ports "$container" >"$state_dir/previous-ports/$service"
   done
 
-  render_compose "$state_dir/previous-compose.yml" "$state_dir/previous-env" "$state_dir/current-render"
   render_compose "$inputs/$compose" "$inputs/$env_file" "$state_dir/candidate-render"
-  cmp -s "$state_dir/current-render/images.map" "$state_dir/candidate-render/images.map"
+  COMPOSE_PROFILES=bootstrap render_compose "$inputs/$compose" "$inputs/$env_file" "$state_dir/candidate-profile-render"
+  validate_service_transition "$state_dir/current-render/images.map" "$state_dir/candidate-render/images.map"
   for service in $services; do
     container=$(docker compose --project-name "$project" --project-directory "$root" -f "$state_dir/previous-compose.yml" --env-file "$state_dir/previous-env" ps --all -q "$service")
     expected_image=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/previous-image-ids.map")
@@ -541,10 +730,12 @@ rollout_main() {
     runtime_resources_reproduce_render "$container" "$expected_image" "$state_dir/previous-resources/$service" "$state_dir/current-render/resources/$service"
     current_ports_reproduce_runtime "$state_dir/previous-ports/$service" "$state_dir/current-render/ports/$service"
     cmp -s "$state_dir/current-render/resources/$service" "$state_dir/candidate-render/resources/$service"
-    if [[ $server == 2 ]]; then
-      awk -F '|' '$1 == "P" && $3 != "127.0.0.1" { bad=1 } END { exit (bad ? 1 : 0) }' "$state_dir/candidate-render/ports/$service"
-    fi
   done
+  if [[ $server == 2 ]]; then
+    while IFS='|' read -r service _; do
+      awk -F '|' '$1 == "P" && $3 != "127.0.0.1" { bad=1 } END { exit (bad ? 1 : 0) }' "$state_dir/candidate-render/ports/$service"
+    done <"$state_dir/candidate-render/images.map"
+  fi
   while IFS='|' read -r service previous_mode; do
     current_healthcheck=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/current-render/healthchecks.map")
     candidate_healthcheck=$(awk -F '|' -v service="$service" '$1 == service { print $2 }' "$state_dir/candidate-render/healthchecks.map")
@@ -565,6 +756,7 @@ rollout_main() {
     [[ $current_healthcheck != configured || $candidate_healthcheck == configured ]]
     [[ $previous_mode != healthy || $candidate_mode == healthy ]]
   done <"$state_dir/previous-readiness"
+  pull_new_service_images
 
   printf '%s\n' "$server" >"$state_dir/server"
   printf '%s\n' "$revision" >"$state_dir/revision"
@@ -615,6 +807,8 @@ rollout_main() {
   chmod 600 "$root/$env_file"
   docker compose --project-name "$project" --project-directory "$root" -f "$root/$compose" -f "$state_dir/previous-images.yml" --env-file "$root/$env_file" up -d --wait --pull never
   candidate_ready
+  new_services_ready
+  run_bootstrap_initializers
   if [[ $server == 2 ]]; then promote_prod2_ops; fi
 
   printf '%s\n' "$revision" >"$root/.last-deployed-prod${server}-sha"

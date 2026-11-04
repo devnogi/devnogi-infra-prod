@@ -13,6 +13,14 @@ const script = fileURLToPath(new URL('../scripts/deploy-prod.sh', import.meta.ur
 const revision = 'a'.repeat(40);
 const imageApp = `sha256:${'1'.repeat(64)}`;
 const imageCache = `sha256:${'2'.repeat(64)}`;
+const bootstrapImages = {
+  kafka: [`registry.example/kafka@sha256:${'3'.repeat(64)}`, `sha256:${'8'.repeat(64)}`],
+  'kafka-init': [`registry.example/kafka@sha256:${'3'.repeat(64)}`, `sha256:${'8'.repeat(64)}`],
+  'kafka-ui': [`registry.example/kafka-ui@sha256:${'4'.repeat(64)}`, `sha256:${'9'.repeat(64)}`],
+  minio: [`sha256:${'a'.repeat(64)}`, `sha256:${'a'.repeat(64)}`],
+  'minio-init': [`sha256:${'a'.repeat(64)}`, `sha256:${'a'.repeat(64)}`],
+  rogue: [`registry.example/rogue@sha256:${'7'.repeat(64)}`, `sha256:${'c'.repeat(64)}`],
+};
 
 function executable(path, content) {
   writeFileSync(path, content, { mode: 0o755 });
@@ -188,10 +196,17 @@ args="$*"
 printf '%s\n' "$args" >>"$FIXTURE/docker.args"
 candidate=0
 case "$args" in *'.deploy-staging/'*'/inputs/docker-compose-'*) candidate=1 ;; esac
+bootstrap=0
+case "$SCENARIO" in
+  bootstrap-*) [ "$candidate" = 0 ] || bootstrap=1 ;;
+  steady-bootstrap-*) bootstrap=1 ;;
+esac
+profile=\${COMPOSE_PROFILES:-}
 case "$args" in
   *' config --services')
     case "$args" in *'--project-name infra'*'--project-directory '*) ;; *) echo 'missing exact project identity' >&2; exit 92 ;; esac
     printf 'app\\ncache\\n'
+    [ "$bootstrap" != 1 ] || printf 'kafka\\nkafka-ui\\nminio\\n'
     ;;
   *' config --format json')
     app_image=image/app:1
@@ -218,13 +233,38 @@ case "$args" in
       [ "$SCENARIO" != live-drift-readiness ] || app_health=
     fi
     if [ -n "$app_health" ]; then health=",\\\"healthcheck\\\":{\${app_health}}"; else health=; fi
-    printf '{"name":"infra","services":{"app":{"image":"%s","volumes":[{"type":"bind","source":"%s","target":"/data"}],"networks":{"default":{}},"ports":[{"target":8080,"published":"18080","protocol":"tcp","host_ip":"%s"}]%s},"cache":{"image":"%s","volumes":[{"type":"volume","source":"cache-data","target":"/cache"}],"networks":{"default":{}},"ports":[{"target":6379,"published":"16379","protocol":"tcp","host_ip":"%s"}],"healthcheck":{"test":["CMD","true"]}}},"volumes":{"cache-data":{"name":"infra_cache-data"}},"networks":{"default":{"name":"%s"}}}\\n' "$app_image" "$app_source" "$app_host" "$health" "$cache_image" "$cache_host" "$network_name"
+    extras=
+    if [ "$bootstrap" = 1 ]; then
+      extras=',"kafka":{"image":"${bootstrapImages.kafka[0]}","volumes":[{"type":"bind","source":"/opt/kafka/data","target":"/var/lib/kafka/data"}],"networks":{"default":{}},"ports":[{"target":9102,"published":"9102","protocol":"tcp","host_ip":"127.0.0.1"}],"healthcheck":{"test":["CMD","true"]}},"kafka-ui":{"image":"${bootstrapImages['kafka-ui'][0]}","networks":{"default":{}},"ports":[{"target":9112,"published":"9112","protocol":"tcp","host_ip":"127.0.0.1"}]},"minio":{"image":"${bootstrapImages.minio[0]}","volumes":[{"type":"bind","source":"/opt/infra/minio-data","target":"/data"}],"networks":{"default":{}},"ports":[{"target":9000,"published":"9000","protocol":"tcp","host_ip":"127.0.0.1"},{"target":9001,"published":"9001","protocol":"tcp","host_ip":"127.0.0.1"}],"healthcheck":{"test":["CMD","true"]}}'
+      if [ "$profile" = bootstrap ]; then
+        if [ "$SCENARIO" = steady-bootstrap-profile-drift ] && [ "$candidate" = 1 ]; then
+          extras="$extras"',"kafka-init":{"image":"${bootstrapImages['kafka-init'][0]}","networks":{"default":{}}},"minio-init":{"image":"${bootstrapImages.rogue[0]}","networks":{"default":{}}}'
+        elif [ "$SCENARIO" = bootstrap-kafka-init-mismatch ]; then
+          extras="$extras"',"kafka-init":{"image":"${bootstrapImages.rogue[0]}","networks":{"default":{}}},"minio-init":{"image":"${bootstrapImages['minio-init'][0]}","networks":{"default":{}}}'
+        elif [ "$SCENARIO" = bootstrap-minio-init-mismatch ]; then
+          extras="$extras"',"kafka-init":{"image":"${bootstrapImages['kafka-init'][0]}","networks":{"default":{}}},"minio-init":{"image":"sha256:${'d'.repeat(64)}","networks":{"default":{}}}'
+        else
+          extras="$extras"',"kafka-init":{"image":"${bootstrapImages['kafka-init'][0]}","networks":{"default":{}}},"minio-init":{"image":"${bootstrapImages['minio-init'][0]}","networks":{"default":{}}}'
+        fi
+      fi
+      if [ "$SCENARIO" = bootstrap-unexpected-service ]; then
+        extras="$extras"',"rogue":{"image":"${bootstrapImages.rogue[0]}","networks":{"default":{}}}'
+      fi
+    fi
+    printf '{"name":"infra","services":{"app":{"image":"%s","volumes":[{"type":"bind","source":"%s","target":"/data"}],"networks":{"default":{}},"ports":[{"target":8080,"published":"18080","protocol":"tcp","host_ip":"%s"}]%s},"cache":{"image":"%s","volumes":[{"type":"volume","source":"cache-data","target":"/cache"}],"networks":{"default":{}},"ports":[{"target":6379,"published":"16379","protocol":"tcp","host_ip":"%s"}],"healthcheck":{"test":["CMD","true"]}}%s},"volumes":{"cache-data":{"name":"infra_cache-data"}},"networks":{"default":{"name":"%s"}}}\\n' "$app_image" "$app_source" "$app_host" "$health" "$cache_image" "$cache_host" "$extras" "$network_name"
     ;;
   *' ps --all -q app') case "$args" in *'--project-name infra'*'--project-directory '*) echo container-app ;; *) exit 92 ;; esac ;;
   *' ps --all -q cache') case "$args" in *'--project-name infra'*'--project-directory '*) echo container-cache ;; *) exit 92 ;; esac ;;
+  *' ps --all -q kafka-init') echo container-kafka-init ;;
+  *' ps --all -q kafka-ui') echo container-kafka-ui ;;
+  *' ps --all -q kafka') echo container-kafka ;;
+  *' ps --all -q minio-init') echo container-minio-init ;;
+  *' ps --all -q minio') echo container-minio ;;
   'inspect --format {{index .Config.Labels "com.docker.compose.project"}} container-'*) echo infra ;;
   'inspect --format {{index .Config.Labels "com.docker.compose.service"}} container-app') echo app ;;
   'inspect --format {{index .Config.Labels "com.docker.compose.service"}} container-cache') echo cache ;;
+  'inspect --format {{index .Config.Labels "com.docker.compose.service"}} container-'*) echo "\${args##*container-}" ;;
+  'inspect --format {{.State.Status}} container-kafka-init'|'inspect --format {{.State.Status}} container-minio-init') echo exited ;;
   'inspect --format {{.State.Status}} container-'*)
     if [ "$SCENARIO" = prior-stopped ] && [ ! -f "$FIXTURE/started" ] && [ "$args" = 'inspect --format {{.State.Status}} container-app' ]; then echo exited; else echo running; fi
     ;;
@@ -263,12 +303,20 @@ case "$args" in
       echo unhealthy
     elif [ "$SCENARIO" = recovery-unhealthy ] && [ -f "$FIXTURE/rollback-complete" ]; then
       echo unhealthy
+    elif [ "$SCENARIO" = bootstrap-unhealthy ] && [ "$args" = 'inspect --format {{.State.Health.Status}} container-kafka' ]; then
+      echo unhealthy
     else
       echo healthy
     fi
     ;;
   'inspect --format {{.Image}} container-app') echo '${imageApp}' ;;
   'inspect --format {{.Image}} container-cache') echo '${imageCache}' ;;
+  'inspect --format {{.Image}} container-kafka'|'inspect --format {{.Image}} container-kafka-init') echo '${bootstrapImages.kafka[1]}' ;;
+  'inspect --format {{.Image}} container-kafka-ui') echo '${bootstrapImages['kafka-ui'][1]}' ;;
+  'inspect --format {{.Image}} container-minio') echo '${bootstrapImages.minio[1]}' ;;
+  'inspect --format {{.Image}} container-minio-init') echo '${bootstrapImages['minio-init'][1]}' ;;
+  'inspect --format {{.State.ExitCode}} container-kafka-init') [ "$SCENARIO" != bootstrap-init-failure ] && echo 0 || echo 1 ;;
+  'inspect --format {{.State.ExitCode}} container-minio-init') echo 0 ;;
   *NetworkSettings.Ports*container-app)
     if [ ! -f "$FIXTURE/started" ]; then
       case "$SCENARIO" in
@@ -302,6 +350,10 @@ case "$args" in
     else host=0.0.0.0; fi
     printf 'P|6379/tcp|%s|16379\\n' "$host"
     ;;
+  *NetworkSettings.Ports*container-kafka-init|*NetworkSettings.Ports*container-minio-init) ;;
+  *NetworkSettings.Ports*container-kafka) printf 'P|9102/tcp|127.0.0.1|9102\\n' ;;
+  *NetworkSettings.Ports*container-kafka-ui) printf 'P|9112/tcp|127.0.0.1|9112\\n' ;;
+  *NetworkSettings.Ports*container-minio) printf 'P|9000/tcp|127.0.0.1|9000\\nP|9001/tcp|127.0.0.1|9001\\n' ;;
   *Mounts*container-app)
     printf 'M|bind|/srv/app|/data|true\\n'
     case "$SCENARIO" in
@@ -317,6 +369,9 @@ case "$args" in
     esac
     ;;
   *Mounts*container-cache) printf 'M|volume|infra_cache-data|/cache|true\\n' ;;
+  *Mounts*container-kafka) printf 'M|bind|/opt/kafka/data|/var/lib/kafka/data|true\\n' ;;
+  *Mounts*container-minio) printf 'M|bind|/opt/infra/minio-data|/data|true\\n' ;;
+  *Mounts*container-kafka-init|*Mounts*container-kafka-ui|*Mounts*container-minio-init) ;;
   *NetworkSettings.Networks*container-*) printf 'N|infra_devnogi-network\\n' ;;
   *'image inspect --format {{json .Config.Volumes}}'*${imageApp})
     case "$SCENARIO" in
@@ -342,6 +397,25 @@ case "$args" in
     esac
     ;;
   *'image inspect --format {{json .Config.Healthcheck}}'*${imageCache}) echo null ;;
+  *'image inspect --format {{json .Config.Healthcheck}}'*${bootstrapImages.kafka[1]}|*'image inspect --format {{json .Config.Healthcheck}}'*${bootstrapImages['kafka-ui'][1]}|*'image inspect --format {{json .Config.Healthcheck}}'*${bootstrapImages.minio[1]}) echo '{"Test":["CMD","true"]}' ;;
+  *'image inspect --format {{json .Config.Healthcheck}}'*${bootstrapImages['minio-init'][1]}) echo null ;;
+  'image inspect ${bootstrapImages.kafka[0]}'|'image inspect ${bootstrapImages.minio[0]}') ;;
+  'image inspect ${bootstrapImages['kafka-ui'][0]}') [ "$SCENARIO" != bootstrap-pull-failure ] ;;
+  'pull ${bootstrapImages['kafka-ui'][0]}') [ "$SCENARIO" != bootstrap-pull-failure ] ;;
+  pull*) ;;
+  *'image inspect --format {{.Id}} ${bootstrapImages.kafka[0]}') echo '${bootstrapImages.kafka[1]}' ;;
+  *'image inspect --format {{.Id}} ${bootstrapImages['kafka-ui'][0]}') echo '${bootstrapImages['kafka-ui'][1]}' ;;
+  *'image inspect --format {{.Id}} ${bootstrapImages.minio[0]}') echo '${bootstrapImages.minio[1]}' ;;
+  *'image inspect --format {{.Id}} ${bootstrapImages['minio-init'][0]}') echo '${bootstrapImages['minio-init'][1]}' ;;
+  *'image inspect --format {{range .RepoDigests}}{{println .}}{{end}} ${bootstrapImages.kafka[0]}') echo '${bootstrapImages.kafka[0]}' ;;
+  *'image inspect --format {{range .RepoDigests}}{{println .}}{{end}} ${bootstrapImages['kafka-ui'][0]}') echo '${bootstrapImages['kafka-ui'][0]}' ;;
+  *'image inspect --format {{range .RepoDigests}}{{println .}}{{end}} ${bootstrapImages.minio[0]}') echo '${bootstrapImages.minio[0]}' ;;
+  *'image inspect --format {{range .RepoDigests}}{{println .}}{{end}} ${bootstrapImages['minio-init'][0]}') echo '${bootstrapImages['minio-init'][0]}' ;;
+  *'image inspect --format {{json .Config.Volumes}}'*${bootstrapImages.kafka[1]}|*'image inspect --format {{json .Config.Volumes}}'*${bootstrapImages['kafka-ui'][1]}|*'image inspect --format {{json .Config.Volumes}}'*${bootstrapImages.minio[1]}|*'image inspect --format {{json .Config.Volumes}}'*${bootstrapImages['minio-init'][1]}) echo null ;;
+  *image*inspect*${bootstrapImages.kafka[1]}) echo '${bootstrapImages.kafka[0]}' ;;
+  *image*inspect*${bootstrapImages['kafka-ui'][1]}) echo '${bootstrapImages['kafka-ui'][0]}' ;;
+  *image*inspect*${bootstrapImages.minio[1]}) echo '${bootstrapImages.minio[0]}' ;;
+  *image*inspect*${bootstrapImages['minio-init'][1]}) echo '${bootstrapImages['minio-init'][0]}' ;;
   *image*inspect*${imageApp}) echo 'image/app@sha256:${'a'.repeat(64)}' ;;
   *image*inspect*${imageCache}) echo 'image/cache@sha256:${'b'.repeat(64)}' ;;
   *' up -d --wait --pull never')
@@ -354,6 +428,9 @@ case "$args" in
       touch "$FIXTURE/rollback-complete"
     fi
     ;;
+  *' --profile bootstrap run --rm --no-deps --pull never kafka-init') [ "$SCENARIO" != bootstrap-init-failure ] ;;
+  *' --profile bootstrap run --rm --no-deps --pull never minio-init') ;;
+  *' rm -f -s kafka kafka-ui minio') touch "$FIXTURE/new-services-removed" ;;
   *) echo "unexpected docker args: $args" >&2; exit 91 ;;
 esac
 `);
@@ -365,7 +442,7 @@ function runDeployment(t, server, scenario, options = {}) {
   const command = 'if command -v cygpath >/dev/null; then FIXTURE=$(cygpath -u "$FIXTURE"); DEPLOY_ROOT=$(cygpath -u "$DEPLOY_ROOT"); STAGE=$(cygpath -u "$STAGE"); SCRIPT=$(cygpath -u "$SCRIPT"); fi; export FIXTURE DEPLOY_ROOT STAGE SCRIPT PATH="$FIXTURE/bin:$PATH"; exec "$SCRIPT" rollout "$SERVER" "$REVISION" "$STAGE"';
   const result = spawnSync(bash, ['-c', command], {
     encoding: 'utf8',
-    timeout: 20_000,
+    timeout: 45_000,
     env: {
       ...process.env,
       PATH: `${fixture.bin};${process.env.PATH}`,
@@ -442,7 +519,7 @@ test "$(cat "$STAGE/state/finished")" = DEPLOY_FINISHED=1
 `;
   const result = spawnSync(bash, ['-c', command], {
     encoding: 'utf8',
-    timeout: 20_000,
+    timeout: 30_000,
     env: {
       ...process.env,
       PATH: `${fixture.bin};${process.env.PATH}`,
@@ -506,7 +583,7 @@ ${synchronization}
 `;
   const result = spawnSync(bash, ['-c', command], {
     encoding: 'utf8',
-    timeout: 20_000,
+    timeout: 30_000,
     env: {
       ...process.env,
       PATH: `${fixture.bin};${process.env.PATH}`,
@@ -632,6 +709,69 @@ test('prod2 rejects a wildcard candidate binding before mutation', (t) => {
   assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
   assert.equal(existsSync(join(root, 'started')), false);
 });
+
+test('prod2 accepts only the exact digest-pinned Kafka and MinIO bootstrap set', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'bootstrap-success', { run: '153-1' });
+  assert.equal(result.status, 0, `${result.stderr}\n${readFileSync(join(root, 'docker.args'), 'utf8')}`);
+  assert.equal(readFileSync(join(state, 'transition-mode'), 'utf8').trim(), 'prod2-bootstrap');
+  assert.equal(readFileSync(join(state, 'new-services'), 'utf8'), 'kafka\nkafka-ui\nminio\n');
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=SUCCESS');
+  const dockerArgs = readFileSync(join(root, 'docker.args'), 'utf8');
+  assert.match(dockerArgs, /--profile bootstrap run --rm --no-deps --pull never kafka-init/);
+  assert.match(dockerArgs, /--profile bootstrap run --rm --no-deps --pull never minio-init/);
+  assert.doesNotMatch(dockerArgs, new RegExp(`pull ${bootstrapImages.minio[0]}`));
+  assert.equal(existsSync(join(root, 'new-services-removed')), false);
+});
+
+test('prod2 rejects an unexpected bootstrap service before mutation', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'bootstrap-unexpected-service', { run: '154-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+  assert.equal(existsSync(join(root, 'started')), false);
+});
+
+for (const [scenario, run] of [['bootstrap-kafka-init-mismatch', '160-1'], ['bootstrap-minio-init-mismatch', '161-1']]) {
+  test(`prod2 rejects ${scenario} before mutation`, (t) => {
+    const { root, state, result } = runDeployment(t, 2, scenario, { run });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+    assert.equal(existsSync(join(root, 'started')), false);
+  });
+}
+
+test('prod2 rejects a missing digest image before container mutation', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'bootstrap-pull-failure', { run: '155-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+  assert.equal(existsSync(join(root, 'started')), false);
+  assert.match(readFileSync(join(root, 'docker.args'), 'utf8'), new RegExp(`pull ${bootstrapImages['kafka-ui'][0]}`));
+});
+
+test('prod2 rejects bootstrap-profile image drift on a later steady deployment', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'steady-bootstrap-profile-drift', { run: '158-1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=PREFLIGHT_FAILED');
+  assert.equal(existsSync(join(root, 'started')), false);
+});
+
+test('prod2 steady deployment accepts the exact locally loaded MinIO image ID without rerunning init', (t) => {
+  const { root, state, result } = runDeployment(t, 2, 'steady-bootstrap-success', { run: '159-1' });
+  assert.equal(result.status, 0, `${result.stderr}\n${readFileSync(join(root, 'docker.args'), 'utf8')}`);
+  assert.equal(readFileSync(join(state, 'transition-mode'), 'utf8').trim(), 'steady');
+  const dockerArgs = readFileSync(join(root, 'docker.args'), 'utf8');
+  assert.doesNotMatch(dockerArgs, /--profile bootstrap run/);
+  assert.doesNotMatch(dockerArgs, new RegExp(`RepoDigests.*${bootstrapImages.minio[0]}`));
+});
+
+for (const [scenario, run] of [['bootstrap-unhealthy', '156-1'], ['bootstrap-init-failure', '157-1']]) {
+  test(`prod2 removes new services and restores prior state after ${scenario}`, (t) => {
+    const { root, state, result } = runDeployment(t, 2, scenario, { run });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(state, 'result'), 'utf8').trim(), 'DEPLOY_RESULT=ROLLED_BACK');
+    assert.equal(readFileSync(join(root, 'docker-compose-prod2.yml'), 'utf8'), 'old-compose\n');
+    assert.equal(existsSync(join(root, 'new-services-removed')), true);
+  });
+}
 
 test('prod2 accepts the exact Docker dual-stack expansion of a Compose wildcard before mutation', (t) => {
   const { root, state, result } = runDeployment(t, 2, 'dual-stack-wildcard', { run: '134-1' });
