@@ -25,6 +25,7 @@ test('prod2 Kafka uses internal service discovery and loopback-only diagnostics'
 test('Kafka init creates only the active production topics', () => {
   const init = service('kafka-init', 'kafka-ui');
   assert.match(init, /profiles: \["bootstrap"\]/);
+  assert.match(init, /command:\r?\n\s+- \|/);
   for (const topic of ['USER_INFO_UPDATE_EVENT', 'USER_VERIFICATION_VERIFY_EVENT', 'USER_INFO_UPDATE_EVENT.DLT']) {
     assert.match(init, new RegExp(topic.replace('.', '\\.')));
   }
@@ -49,6 +50,7 @@ test('MinIO init creates isolated users, buckets, policies, and public Auth down
   const init = service('minio-init', 'autoheal');
   assert.match(init, /image: \$\{MINIO_IMAGE\}/);
   assert.match(init, /profiles: \["bootstrap"\]/);
+  assert.match(init, /command:\r?\n\s+- \|/);
   assert.match(init, /mc mb --ignore-existing "prod\/\$\$AUTH_MINIO_BUCKET"/);
   assert.match(init, /mc mb --ignore-existing "prod\/\$\$COMMUNITY_MINIO_BUCKET"/);
   assert.match(init, /mc anonymous set download "prod\/\$\$AUTH_MINIO_BUCKET"/);
