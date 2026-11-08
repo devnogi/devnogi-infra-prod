@@ -84,6 +84,9 @@ test('prod2 MinIO reconciliation is main-only, pinned, and lock-protected', () =
   assert.match(script, /flock -w 30 9/);
   assert.match(script, /"s3:GetBucketLocation","s3:ListBucket"/);
   assert.match(script, /--profile bootstrap run --rm --no-deps --pull never minio-init/);
+  assert.match(script, /diagnostic_dir=\/opt\/infra\/\.minio-reconcile-failures/);
+  assert.match(script, /install -m 600 "\$log" "\$diagnostic"/);
+  assert.match(script, /diagnostic retained at \$diagnostic/);
   assert.equal(Buffer.from(script).includes(13), false);
   assert.doesNotMatch(script, /StrictHostKeyChecking=(?:no|accept-new)|down\s+-v|volume\s+rm|image prune/);
 });

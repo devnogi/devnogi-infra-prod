@@ -26,6 +26,8 @@
 
 기존 MinIO 사용자 정책만 변경한 경우 main 배포가 완료된 뒤 `Reconcile prod2 MinIO policy` workflow를 main에서 수동 실행한다. 이 workflow는 배포된 revision과 Compose의 정책 계약을 확인하고 prod2 배포 lock을 획득한 뒤 `minio-init`만 반복 실행한다. 새 정책을 사용하는 애플리케이션의 실제 SDK probe가 성공하기 전에는 복구 완료로 판단하지 않는다.
 
+reconcile이 실패하면 원격 출력은 `/opt/infra/.minio-reconcile-failures/<40자리 revision>-<run id>-<attempt>.log`에 mode `0600`으로 보존되고 workflow는 정확한 경로만 출력한다. 원인을 확인한 뒤 경로 형식을 다시 검증하고 해당 파일 하나만 삭제한다. 상위 디렉터리 전체나 glob을 사용해 삭제하지 않는다.
+
 ```sh
 docker compose --project-directory /opt/infra --env-file /opt/infra/.env.infra2 -f /opt/infra/docker-compose-prod2.yml --profile bootstrap run --rm kafka-init
 docker compose --project-directory /opt/infra --env-file /opt/infra/.env.infra2 -f /opt/infra/docker-compose-prod2.yml --profile bootstrap run --rm minio-init

@@ -39,7 +39,9 @@ cat > "$work/reconcile.sh" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 umask 077
 expected_revision=$1
+run=$2
 [[ $expected_revision =~ ^[0-9a-f]{40}$ ]]
+[[ $run =~ ^[0-9]+-[0-9]+$ ]]
 cd /opt/infra
 [[ -s docker-compose-prod2.yml && -s .env.infra2 && -s .last-deployed-prod2-sha ]]
 [[ $(<.last-deployed-prod2-sha) == "$expected_revision" ]]
@@ -52,18 +54,30 @@ project=$(docker compose --project-directory /opt/infra -f docker-compose-prod2.
 [[ $project =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]
 
 log=$(mktemp /tmp/prod2-minio-reconcile.XXXXXXXX.log)
-trap 'rm -f "$log"' EXIT
 if ! docker compose --project-name "$project" --project-directory /opt/infra -f docker-compose-prod2.yml --env-file .env.infra2 --profile bootstrap run --rm --no-deps --pull never minio-init > "$log" 2>&1; then
-  echo 'MinIO policy reconciliation failed' >&2
+  diagnostic_dir=/opt/infra/.minio-reconcile-failures
+  diagnostic="$diagnostic_dir/$expected_revision-$run.log"
+  mkdir -p "$diagnostic_dir"
+  chmod 700 "$diagnostic_dir"
+  install -m 600 "$log" "$diagnostic"
+  rm -f "$log"
+  echo "MinIO policy reconciliation failed; diagnostic=$diagnostic" >&2
   exit 1
 fi
+rm -f "$log"
 echo 'MinIO policy reconciliation verified'
 REMOTE_SCRIPT
 
 opts=(-i "$work/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$work/known_hosts" -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519 -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=2 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 destination="$PROD_USER@$PROD_HOST"
-if ! ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" bash -s -- "$GITHUB_SHA" < "$work/reconcile.sh" > "$work/ssh.log" 2>&1; then
-  echo 'Remote MinIO policy reconciliation failed' >&2
+run="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+if ! ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" bash -s -- "$GITHUB_SHA" "$run" < "$work/reconcile.sh" > "$work/ssh.log" 2>&1; then
+  diagnostic=$(grep -oE 'diagnostic=/opt/infra/\.minio-reconcile-failures/[0-9a-f]{40}-[0-9]+-[0-9]+\.log' "$work/ssh.log" | tail -n 1 | cut -d= -f2- || true)
+  if [[ $diagnostic =~ ^/opt/infra/\.minio-reconcile-failures/[0-9a-f]{40}-[0-9]+-[0-9]+\.log$ ]]; then
+    echo "Remote MinIO policy reconciliation failed; diagnostic retained at $diagnostic" >&2
+  else
+    echo 'Remote MinIO policy reconciliation failed before a diagnostic path was returned' >&2
+  fi
   exit 1
 fi
 grep -qx 'MinIO policy reconciliation verified' "$work/ssh.log" || { echo 'MinIO policy verification result missing' >&2; exit 1; }
