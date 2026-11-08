@@ -135,6 +135,7 @@ test('no arguments checks all Compose files in order with synthetic environment 
         join(dirname(dirname(script)), 'tests', 'bootstrap-local-auth.test.mjs'),
         join(dirname(dirname(script)), 'tests', 'prod2-backup.test.mjs'),
         join(dirname(dirname(script)), 'tests', 'prod2-origin.test.mjs'),
+        join(dirname(dirname(script)), 'tests', 'prod2-nginx-upload.test.mjs'),
         join(dirname(dirname(script)), 'tests', 'prod2-kafka-minio.test.mjs'),
         join(dirname(dirname(script)), 'tests', 'prod2-transfer.test.mjs'),
         join(dirname(dirname(script)), 'tests', 'production-workflows.test.mjs'),

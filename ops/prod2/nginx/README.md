@@ -4,6 +4,50 @@ These reviewed fragments are additions to the existing host Nginx configuration,
 
 `storage-minio.conf` is the reviewed exception that creates the new `storage.memonogi.com` vhost for the prod2 MinIO migration. The currently observed prod2 certificate covers only `memonogi.com` and `www.memonogi.com`; it must not be reused for storage. Provision a publicly trusted separate or wildcard certificate that includes `storage.memonogi.com` through the approved DNS-01 path before installation. The vhost keeps the S3 request Host header, disables request/response buffering, and proxies only to the loopback MinIO API. `install-storage-minio.sh` applies it only when run explicitly as root, requires the pre-reviewed `/etc/nginx/snippets/memonogi-storage-tls.conf`, verifies its certificate with `openssl x509 -checkhost`, backs up any prior vhost, validates with `nginx -t`, and restores the prior file if validation or reload fails. Follow [the Kafka·MinIO rollout](../../../docs/prod2-kafka-minio.md); the general fragments in this directory remain manual and are not installed by that script.
 
+## Outfit upload boundary
+
+`memonogi.conf.template` and `outfit-upload-server.conf` are the managed sources for `/etc/nginx/sites-enabled/memonogi.conf`. The repository does not contain enough authoritative evidence to reproduce the live redirect, route, upstream, header, real-IP, or TLS declarations safely. The renderer therefore consumes a root-only copy of the current full vhost and preserves those environment-specific declarations instead of guessing them. It replaces exactly one reviewed in-server marker with the managed upload include and rejects ambiguous, top-level, already-managed, or unresolved markers.
+
+The 30 MiB outer limit leaves room for the application contract of five images at 5 MiB each while retaining the Community request limit as the inner validation boundary. Nginx-generated 413 responses return JSON code `OUTFIT_PAYLOAD_TOO_LARGE`. The 150-second client/proxy timeouts bound slow uploads without the ingress becoming the upload timeout bottleneck.
+
+Before host changes, capture `sudo nginx -T` into root-only operational storage and copy `/etc/nginx/sites-enabled/memonogi.conf` to a root-only working file. Review the complete effective routing, then add the following marker exactly once inside the existing HTTPS `server` block that proxies the public React application. Remove or reconcile only duplicate size/timeout/error-page directives in that same reviewed block; do not edit any unrelated route or setting.
+
+```nginx
+# MEMONOGI_MANAGED_OUTFIT_UPLOAD_BOUNDARY
+```
+
+Keep an untouched copy of the live file as the source and make a separate marked working copy. Adding the marker must be the only byte-level difference: the renderer removes that line and requires the result, including line endings, to equal the untouched source exactly. Route, upstream, header, timeout, or TLS edits in the marked copy are rejected. Render a new file and SHA-256 manifest without committing or printing any environment-specific input or output:
+
+```sh
+sudo node scripts/render-memonogi-vhost.mjs \
+  --source /root/memonogi-nginx/current.conf \
+  --input /root/memonogi-nginx/current-marked.conf \
+  --output /root/memonogi-nginx/memonogi.candidate.conf
+sudo sh ops/prod2/nginx/install-memonogi-vhost.sh \
+  --check /root/memonogi-nginx/memonogi.candidate.conf
+sudo diff -u -- /etc/nginx/sites-enabled/memonogi.conf \
+  /root/memonogi-nginx/memonogi.candidate.conf
+```
+
+Keep the diff in root-only operator storage because it contains origin routing and certificate paths. It must show only the managed header and the reviewed marker-to-include change. The sidecar `.manifest` binds the untouched source and rendered candidate hashes. Both `--check` and `--apply` reject the candidate if the live target changed after rendering or the candidate changed after manifest creation.
+
+The installer supports regular files only and deliberately rejects symlinked vhost, candidate, manifest, source snippet, or installed snippet paths rather than changing link identity or an unexpected referent. After approval, it backs up exact regular files and metadata, stages the vhost and snippet on their destination filesystems, renames each atomically, runs `nginx -t`, reloads, and restores the prior file types, modes, owners, and contents on failure:
+
+```sh
+sudo sh ops/prod2/nginx/install-memonogi-vhost.sh \
+  --apply /root/memonogi-nginx/memonogi.candidate.conf
+```
+
+Verify an unauthenticated synthetic multipart request below 30 MiB reaches the existing application boundary rather than returning an ingress 413, and a request above 30 MiB returns HTTP 413 with `Content-Type: application/json` and code `OUTFIT_PAYLOAD_TOO_LARGE`. Do not use real images, credentials, or create posts for this boundary check. Monitor Nginx 413/499/504 responses during the approved rollout.
+
+Repository checks keep production values out of fixtures. The standard verification checks the exact contract statically without a Docker daemon. PR CI must additionally run the digest-pinned official Nginx 1.24 parser against the synthetic vhost:
+
+```sh
+node scripts/verify-nginx.mjs
+```
+
+To roll back after a successful installation, use the exact backup path printed by the installer to restore both `memonogi.conf` and the prior snippet state, run `sudo nginx -t`, reload, then repeat the public health and upload-boundary checks. Do not delete certificates, logs, or application data.
+
 ## Inventory and reachability
 
 Record the active Nginx configuration (`nginx -T`, taking care not to expose sensitive information), Docker service names, published ports, networks, image digests, health checks, volumes, host and provider firewall rules, and their consumers. Confirm the Nginx-to-React, React-to-Gateway, Gateway-to-backends, and backend-to-MySQL/Redis/Elasticsearch paths, including any traffic from another host. Do not close an endpoint before its replacement path is verified. Keep the established SSH session and verify a separate recovery console before changing firewall rules. Record the rollback paths without storing credentials in Git.

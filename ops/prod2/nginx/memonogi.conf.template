@@ -1,0 +1,4 @@
+# Managed full-file template for /etc/nginx/sites-enabled/memonogi.conf.
+# Environment-specific TLS, upstream, redirect, header, and route declarations
+# remain in the root-only current-vhost input and are never committed here.
+@@CURRENT_VHOST_BEFORE_OUTFIT_BOUNDARY@@@@OUTFIT_UPLOAD_BOUNDARY_INCLUDE@@@@CURRENT_VHOST_AFTER_OUTFIT_BOUNDARY@@

@@ -27,4 +27,5 @@ jobs:
         with:
           node-version: '20'
       - run: node --test tests/verify.test.mjs tests/production-workflows.test.mjs tests/production-deploy-fixture.test.mjs tests/prod2-transfer.test.mjs
+      - run: node scripts/verify-nginx.mjs
       - run: node scripts/verify.mjs
