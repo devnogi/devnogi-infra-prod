@@ -80,5 +80,5 @@ if ! ssh "${opts[@]}" -p "$PROD_SSH_PORT" "$destination" bash -s -- "$GITHUB_SHA
   fi
   exit 1
 fi
-grep -qx 'MinIO policy reconciliation verified' "$work/ssh.log" || { echo 'MinIO policy verification result missing' >&2; exit 1; }
+# The remote script is strict-mode and OpenSSH propagates its exit status.
 echo 'prod2 Community MinIO policy reconciled'

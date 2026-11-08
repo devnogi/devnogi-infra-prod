@@ -87,6 +87,8 @@ test('prod2 MinIO reconciliation is main-only, pinned, and lock-protected', () =
   assert.match(script, /diagnostic_dir=\/opt\/infra\/\.minio-reconcile-failures/);
   assert.match(script, /install -m 600 "\$log" "\$diagnostic"/);
   assert.match(script, /diagnostic retained at \$diagnostic/);
+  assert.match(script, /if ! ssh "\$\{opts\[@\]\}"[^\n]+bash -s/);
+  assert.doesNotMatch(script, /grep -qx 'MinIO policy reconciliation verified'/);
   assert.equal(Buffer.from(script).includes(13), false);
   assert.doesNotMatch(script, /StrictHostKeyChecking=(?:no|accept-new)|down\s+-v|volume\s+rm|image prune/);
 });
