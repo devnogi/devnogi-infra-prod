@@ -175,7 +175,7 @@ services:
         mc anonymous set download "prod/$$AUTH_MINIO_BUCKET" >/dev/null
         mc anonymous set none "prod/$$COMMUNITY_MINIO_BUCKET" >/dev/null
         printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$AUTH_MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::'"$$AUTH_MINIO_BUCKET"'/*"]}]}' > /tmp/auth-policy.json
-        printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'/*"]}]}' > /tmp/community-policy.json
+        printf '%s\n' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::'"$$COMMUNITY_MINIO_BUCKET"'/*"]}]}' > /tmp/community-policy.json
         # policy create overwrites an existing named policy; user add updates an existing user's secret.
         mc admin policy create prod auth-profile-rw /tmp/auth-policy.json >/dev/null
         mc admin policy create prod community-media-rw /tmp/community-policy.json >/dev/null

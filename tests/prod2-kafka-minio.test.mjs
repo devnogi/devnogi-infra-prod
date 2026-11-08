@@ -57,6 +57,7 @@ test('MinIO init creates isolated users, buckets, policies, and public Auth down
   assert.match(init, /mc anonymous set none "prod\/\$\$COMMUNITY_MINIO_BUCKET"/);
   assert.match(init, /mc admin policy attach prod auth-profile-rw --user "\$\$AUTH_MINIO_ACCESS_KEY"/);
   assert.match(init, /mc admin policy attach prod community-media-rw --user "\$\$COMMUNITY_MINIO_ACCESS_KEY"/);
+  assert.match(init, /"Action":\["s3:GetBucketLocation","s3:ListBucket"\].*\$\$COMMUNITY_MINIO_BUCKET/);
   assert.match(init, /policy create overwrites an existing named policy/);
   assert.match(init, /printf '%s\\n%s\\n' "\$\$AUTH_MINIO_ACCESS_KEY" "\$\$AUTH_MINIO_SECRET_KEY" \| mc admin user add prod/);
   assert.match(init, /printf '%s\\n%s\\n' "\$\$COMMUNITY_MINIO_ACCESS_KEY" "\$\$COMMUNITY_MINIO_SECRET_KEY" \| mc admin user add prod/);
