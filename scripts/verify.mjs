@@ -35,6 +35,7 @@ export function run(args = [], { runDocker = spawnSync, runTests = spawnSync, st
       join(root, 'tests', 'bootstrap-local-auth.test.mjs'),
       join(root, 'tests', 'prod2-backup.test.mjs'),
       join(root, 'tests', 'prod2-origin.test.mjs'),
+      join(root, 'tests', 'prod2-nginx-upload.test.mjs'),
       join(root, 'tests', 'prod2-kafka-minio.test.mjs'),
       join(root, 'tests', 'prod2-transfer.test.mjs'),
       join(root, 'tests', 'production-workflows.test.mjs'),

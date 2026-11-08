@@ -23,6 +23,12 @@ node scripts/verify.mjs --help
 node --test tests/verify.test.mjs
 ```
 
+운영 값을 포함하지 않는 합성 vhost로 prod2 Nginx 업로드 경계의 실제 syntax도 검사할 수 있습니다. 이 추가 검사는 Docker 데몬과 digest로 고정된 공식 Nginx 1.24 이미지가 필요하며 PR의 필수 `verify` job에서도 실행됩니다.
+
+```sh
+node scripts/verify-nginx.mjs
+```
+
 도움말은 종료 코드 0으로 끝나며 테스트·Docker를 호출하거나 환경 fixture를 읽지 않습니다. 알 수 없는 인수 또는 `--help extra` 같은 조합은 오류와 도움말 안내를 출력하고 종료 코드 2로 끝납니다. CLI 테스트는 실제 컨테이너나 운영 비밀값을 사용하지 않습니다. PR의 `verify`도 이 테스트 후 표준 검증을 실행합니다.
 
 표준 검증은 먼저 `tests/bootstrap-local-auth.test.mjs`에서 실제 bootstrap 스크립트를 가짜 MySQL 명령으로 실행해 허용된 SQL, 잘못된 계정, 실패 처리와 비밀값 미출력을 검사합니다. 이어서 로컬·운영 Compose 3개를 임시 디렉터리와 `tests/compose.env`의 가짜 값으로 검사합니다. 기존 `.env`를 수정하지 않고 컨테이너도 실행하지 않습니다. 이 검사는 서비스 기동·실제 DB 통합 테스트를 대체하지 않습니다.
