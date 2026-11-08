@@ -18,7 +18,7 @@
 - Kafka UI: `KAFKA_UI_IMAGE`, `KAFKA_UI_PORT=9112`, timezone/locale/JVM/login 값
 - MinIO: exact local image ID 형식의 `MINIO_IMAGE=sha256:...`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_SERVER_URL=https://storage.memonogi.com`, `MINIO_BROWSER_REDIRECT_URL=http://localhost:9000`
 - Auth MinIO: `AUTH_MINIO_ACCESS_KEY`, `AUTH_MINIO_SECRET_KEY`, `AUTH_MINIO_BUCKET=auth-profile`
-- Community MinIO: `COMMUNITY_MINIO_ACCESS_KEY`, `COMMUNITY_MINIO_SECRET_KEY`, `COMMUNITY_MINIO_BUCKET=memonogi-community-bucket`
+- Community MinIO: `COMMUNITY_MINIO_ACCESS_KEY`, `COMMUNITY_MINIO_SECRET_KEY`, `COMMUNITY_MINIO_BUCKET=memonogi-community-bucket`. `community-media-rw` 정책은 Java MinIO SDK가 객체 작업 전에 수행하는 bucket region 조회를 위해 bucket 리소스에 `s3:GetBucketLocation`과 `s3:ListBucket`을 허용한다.
 
 ## 인프라 배포 검증
 
