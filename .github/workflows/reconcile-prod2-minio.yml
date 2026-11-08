@@ -1,0 +1,30 @@
+name: Reconcile prod2 MinIO policy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-production-server2
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Reconcile MinIO bootstrap policy
+        env:
+          PROD_HOST: ${{ secrets.PROD2_HOST }}
+          PROD_USER: ${{ secrets.PROD2_USER }}
+          PROD_SSH_PORT: ${{ secrets.PROD2_SSH_PORT }}
+          PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD2_PEM_KEY }}
+          PROD_HOST_FINGERPRINT: ${{ secrets.PROD2_HOST_FINGERPRINT }}
+        run: bash scripts/reconcile-prod2-minio.sh

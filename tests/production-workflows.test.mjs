@@ -66,6 +66,28 @@ test('shared native deployment scripts keep strict host verification and rollbac
   assert.doesNotMatch(remote, /systemctl\s+(?:enable|start).*memonogi-(?:db-backup|drive-upload)\.timer/);
 });
 
+test('prod2 MinIO reconciliation is main-only, pinned, and lock-protected', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/reconcile-prod2-minio.yml', import.meta.url), 'utf8');
+  const script = readFileSync(new URL('../scripts/reconcile-prod2-minio.sh', import.meta.url), 'utf8');
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /environment: production/);
+  assert.match(workflow, /group: infra-production-server2/);
+  assert.match(workflow, /run: bash scripts\/reconcile-prod2-minio\.sh/);
+  assert.match(workflow, /PROD_HOST_FINGERPRINT: \$\{\{ secrets\.PROD2_HOST_FINGERPRINT \}\}/);
+  assert.match(script, /ssh-keyscan[^\n]+-t ed25519/);
+  assert.match(script, /StrictHostKeyChecking=yes/);
+  assert.match(script, /HostKeyAlgorithms=ssh-ed25519/);
+  assert.match(script, /IdentitiesOnly=yes/);
+  assert.match(script, /\.last-deployed-prod2-sha/);
+  assert.match(script, /exec 9>\.deploy-prod2\.lock/);
+  assert.match(script, /flock -w 30 9/);
+  assert.match(script, /"s3:GetBucketLocation","s3:ListBucket"/);
+  assert.match(script, /--profile bootstrap run --rm --no-deps --pull never minio-init/);
+  assert.equal(Buffer.from(script).includes(13), false);
+  assert.doesNotMatch(script, /StrictHostKeyChecking=(?:no|accept-new)|down\s+-v|volume\s+rm|image prune/);
+});
+
 test('prod1 Kafka keeps the proven private bind and restart policy', () => {
   const compose = readFileSync(new URL('../docker-compose-prod1.yml', import.meta.url), 'utf8');
   const kafka = compose.match(/\r?\n  kafka:\r?\n([\s\S]*?)\r?\n  kafka-ui:/)?.[1] ?? '';
